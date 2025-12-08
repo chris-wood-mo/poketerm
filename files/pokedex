@@ -1,0 +1,85 @@
+#!/bin/bash
+
+POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
+GEN_DIR="$HOME/.local/share/poketerm/gen_files"
+
+# Determine generation
+GEN_NUM=${1:-1}
+GEN_FILE="$GEN_DIR/gen${GEN_NUM}_list.txt"
+
+if [ ! -f "$GEN_FILE" ]; then
+    echo "Generation $GEN_NUM list not found."
+    exit 1
+fi
+
+if [ ! -f "$POKEDEX_FILE" ]; then
+    echo "You haven't caught any Pokémon yet."
+    exit 1
+fi
+
+# ANSI colors
+red="\033[31m"
+green="\033[32m"
+yellow="\033[33m"
+cyan="\033[36m"
+reset="\033[0m"
+
+# Header
+echo -e "${red}┌───────────────────────────────┐${reset}"
+echo -e "${red}│${reset}     ${yellow}GENERATION ${GEN_NUM} POKEDEX${reset}${red}      │${reset}"
+echo -e "${red}└───────────────────────────────┘${reset}"
+
+normal_count=0
+shiny_count=0
+unique_count=0
+total=0
+
+while read -r pkm; do
+    total=$((total+1))
+
+    normal=false
+    shiny=false
+
+    if grep -qx "$pkm" "$POKEDEX_FILE"; then
+        normal=true
+    fi
+
+    if grep -qx "$pkm (shiny)" "$POKEDEX_FILE"; then
+        shiny=true
+    fi
+
+    # Count individually
+    if [ "$normal" = true ]; then
+        normal_count=$((normal_count+1))
+    fi
+
+    # Count shiny
+    if [ "$shiny" = true ]; then
+        shiny_count=$((shiny_count+1))
+    fi
+
+    # Count unique
+    if [ "$normal" = true ] || [ "$shiny" = true ]; then
+        unique_count=$((unique_count+1))
+    fi
+
+    if [ "$normal" = true ]; then
+        sym_normal="${green}✔${reset}"
+    else
+        sym_normal="${red}✖${reset}"
+    fi
+
+    if [ "$shiny" = true ]; then
+        sym_shiny="${green}✔${reset}"
+    else
+        sym_shiny="${yellow}✖${reset}"
+    fi
+
+    echo -e "${sym_normal}${sym_shiny} ${pkm}"
+
+done < "$GEN_FILE"
+
+# Summary
+echo -e "\n${cyan}Normal Pokemon caught: ${normal_count} / ${total}${reset}"
+echo -e "${cyan}Shiny Pokemon caught:  ${shiny_count} / ${total}${reset}"
+echo -e "${cyan}Total Unique Pokemon caught:  ${unique_count} / ${total}${reset}"

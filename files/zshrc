@@ -1,0 +1,54 @@
+alias neofetch=neowofetch
+
+# ANSI colors
+blue="\033[34m"
+reset="\033[0m"
+
+POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
+SORTED_FILE="$HOME/.local/share/poketerm/pokedex_sorted.txt"
+GEN_DIR="$HOME/.local/share/poketerm/gen_files"
+
+mkdir -p "$(dirname "$POKEDEX_FILE")"
+touch "$POKEDEX_FILE"
+
+# 1 in 4096 shiny odds
+if (( RANDOM % 4096 == 0 )); then
+    shiny=true
+else
+    shiny=false
+fi
+
+# Fetch Pokémon from Gen 1-8
+if [ "$shiny" = true ]; then
+    raw_output=$(pokemon-colorscripts -r 1-8 -s)
+else
+    raw_output=$(pokemon-colorscripts -r 1-8)
+fi
+
+name=$(echo "$raw_output" | head -n 1)
+sprite=$(echo "$raw_output" | tail -n +2)
+
+# Format output with shiny coloring
+if [ "$shiny" = true ]; then
+    image_source="$(echo -e "$sprite\n${blue}${name}${reset}")"
+else
+    image_source="$(echo -e "$sprite\n${name}")"
+fi
+
+# Add Pokémon to pokedex if not already caught
+if ! grep -qx "$name" "$POKEDEX_FILE"; then
+    echo "$name" >> "$POKEDEX_FILE"
+fi
+
+# Determine which generation list the Pokémon belongs to and sort pokedex accordingly
+for GEN_FILE in "$GEN_DIR"/gen*_list.txt; do
+    if grep -qx "$name" "$GEN_FILE"; then
+        awk 'NR==FNR {a[$1]=NR; next} {print $0, a[$1]}' "$GEN_FILE" "$POKEDEX_FILE" \
+            | sort -k2,2n \
+            | cut -d' ' -f1 > "$SORTED_FILE"
+        mv "$SORTED_FILE" "$POKEDEX_FILE"
+        break
+    fi
+done
+
+neofetch --source $image_source
