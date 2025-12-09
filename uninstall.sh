@@ -10,8 +10,8 @@ echo "Removing poketerm and pokemon-colorscripts shared directories"
 rm -rf "$INSTALL_DIR/poketerm" "$INSTALL_DIR/pokemon-colorscripts" || return 1
 
 # Uninstall hyfetch if it was installed via Homebrew
-echo "Uninstalling hyfetch via brew"
 if command -v hyfetch >/dev/null 2>&1; then
+    echo "Uninstalling hyfetch via brew"
     sudo -u "$LOCAL_USER" brew unlink hyfetch >/dev/null 2>&1
     sudo -u "$LOCAL_USER" brew uninstall hyfetch >/dev/null 2>&1
 fi

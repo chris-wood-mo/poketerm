@@ -19,6 +19,8 @@ This repository provides a simple workflow to "catch" Pokémon created from poke
 
 ## Installation
 
+To install for the first time run:
+
 1. Run the installer:
 
    ```/bin/bash
@@ -30,6 +32,23 @@ This will:
 - Copy generation lists to $HOME/.local/share/poketerm/gen_files
 - Install or link the `pokedex` helper script to /usr/local/bin/pokedex
 - Add the poketerm prompt script into your ~/.zshrc (backups ~/.zshrc to poketerm/zshrc.backup)
+
+## Updating
+
+Updating poketerm will not lose any of your existing pokedex, to update poketerm simply pull from main and run the installer with the update flag:
+
+1. Run the installer:
+
+   ```/bin/bash
+   git pull origin main
+   sudo ./install.sh --update
+   ```
+  
+This will:
+
+- Format any updates to the $HOME/.local/share/poketerm/pokedex.txt
+- Install or link the `pokedex` helper script to /usr/local/bin/pokedex
+- Update the existing script in your ~/.zshrc
 
 ## Usage
 
