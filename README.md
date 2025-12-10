@@ -33,7 +33,7 @@ This will:
 - Install or link the `pokedex` helper script to /usr/local/bin/pokedex
 - Add the poketerm prompt script into your ~/.zshrc (backups ~/.zshrc to poketerm/zshrc.backup)
 
-## Updating
+## Updating from 0.0.1 to 0.0.2
 
 Updating poketerm will not lose any of your existing pokedex, to update poketerm simply pull from main and run the installer with the update flag:
 
@@ -43,7 +43,7 @@ Updating poketerm will not lose any of your existing pokedex, to update poketerm
    git pull origin main
    sudo ./install.sh --update
    ```
-  
+
 This will:
 
 - Format any updates to the $HOME/.local/share/poketerm/pokedex.txt
@@ -81,5 +81,4 @@ This will:
 
 ## To Do
 
-- Add ability to store how many of a single pokemon you catch
 - A more detailed Pokedex
