@@ -1,24 +1,21 @@
 alias neofetch=neowofetch
 
-# ANSI colors
-blue="\033[34m"
-reset="\033[0m"
-
 POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
 SORTED_FILE="$HOME/.local/share/poketerm/pokedex_sorted.txt"
 GEN_DIR="$HOME/.local/share/poketerm/gen_files"
 
+# === MAKE POKEDEX FILE IF IT DOESNT EXIST ===
 mkdir -p "$(dirname "$POKEDEX_FILE")"
 touch "$POKEDEX_FILE"
 
-# 1 in 4096 shiny odds
+# === SHINY ROLL (1/4096) ===
 if (( RANDOM % 4096 == 0 )); then
     shiny=true
 else
     shiny=false
 fi
 
-# Fetch Pokémon from Gen 1-8
+# === FETCH POKEMON (Gen 1–8) ===
 if [ "$shiny" = true ]; then
     raw_output=$(pokemon-colorscripts -r 1-8 -s)
 else
@@ -28,27 +25,61 @@ fi
 name=$(echo "$raw_output" | head -n 1)
 sprite=$(echo "$raw_output" | tail -n +2)
 
-# Format output with shiny coloring
+# === FORMAT NAME FOR POKEDEX STORAGE ===
 if [ "$shiny" = true ]; then
-    image_source="$(echo -e "$sprite\n${blue}${name}${reset}")"
+    stored_name="${name}"
+    display_name="\033[33m${name}\033[0m"
 else
-    image_source="$(echo -e "$sprite\n${name}")"
+    stored_name="$name"
+    display_name="$name"
 fi
 
-# Add Pokémon to pokedex if not already caught
-if ! grep -qx "$name" "$POKEDEX_FILE"; then
-    echo "$name" >> "$POKEDEX_FILE"
-fi
+image_source="$(echo -e "$sprite\n$display_name")"
 
-# Determine which generation list the Pokémon belongs to and sort pokedex accordingly
+# === UPDATE POKEDEX WITH COUNT ===
+awk -v n="$stored_name" '
+{
+    # Split the line into name and count
+    if ($NF ~ /^[0-9]+$/) {
+        count = $NF
+        name = substr($0, 1, length($0)-length($NF))
+        sub(/[ \t]+$/, "", name)
+    } else {
+        name = $0
+        count = 0
+    }
+
+    if (name == n) {
+        count++
+        found=1
+    }
+
+    print name, count
+}
+END {
+    if (!found) print n,1
+}
+' "$POKEDEX_FILE" > "$SORTED_FILE" && mv "$SORTED_FILE" "$POKEDEX_FILE"
+
+# === SORT POKEDEX BY GENERATION ORDER ===
 for GEN_FILE in "$GEN_DIR"/gen*_list.txt; do
     if grep -qx "$name" "$GEN_FILE"; then
-        awk 'NR==FNR {a[$1]=NR; next} {print $0, a[$1]}' "$GEN_FILE" "$POKEDEX_FILE" \
-            | sort -k2,2n \
-            | cut -d' ' -f1 > "$SORTED_FILE"
+        awk '
+            NR==FNR { order[$0]=NR; next }
+            {
+                line=$0
+                base=$0
+                sub(/ \(shiny\)$/, "", base)
+                sort_order = (base in order) ? order[base] : 9999
+                print sort_order "\t" line
+            }
+        ' "$GEN_FILE" "$POKEDEX_FILE" \
+        | sort -n \
+        | cut -f2- > "$SORTED_FILE"
         mv "$SORTED_FILE" "$POKEDEX_FILE"
         break
     fi
 done
 
+# === SHOW IMAGE IN NEOFETCH ===
 neofetch --source $image_source
