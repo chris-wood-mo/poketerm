@@ -89,7 +89,7 @@ if [ "$UPDATE" = true ]; then
         exit 1
     fi
 
-    echo "Backing up ~/.zshrc to poketerm directory $(pwd)/pokedex_update.backup. If you have any issues with the update please the pokedex at $INSTALL_DIR/poketerm/pokedex.txt using this backup."
+    echo "Backing up ~/.zshrc to poketerm directory $(pwd)/pokedex_update.backup. If you have any issues with the update please the pokedex at ${INSTALL_DIR}poketerm/pokedex.txt using this backup."
     sudo -u "$LOCAL_USER" cp "$INSTALL_DIR/poketerm/pokedex.txt" ./pokedex_update.backup
     sudo -u "$LOCAL_USER" touch "format_file.tmp"
     FORMAT_FILE="format_file.tmp"
@@ -125,7 +125,7 @@ else
         echo "Backing up ~/.zshrc to poketerm directory $(pwd)/zshrc.backup. Please keep this file for the uninstall script."
         sudo -u "$LOCAL_USER" cp "$ZSHRC" ./zshrc.backup
 
-        echo "Prepending Pokémon script into ~/.zshrc"
+        echo "Prepending Pokemon script into ~/.zshrc"
 
         sudo -u "$LOCAL_USER" touch "$ZSHRC.tmp"
         {
