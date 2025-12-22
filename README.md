@@ -31,11 +31,12 @@ This will:
 
 - Copy generation lists to $HOME/.local/share/poketerm/gen_files
 - Install or link the `pokedex` helper script to /usr/local/bin/pokedex
+- Install the poketerm shell helper
 - Add the poketerm prompt script into your ~/.zshrc (backups ~/.zshrc to poketerm/zshrc.backup)
 
-## Updating from 0.0.1 to 0.0.2
+## Updating
 
-Updating poketerm will not lose any of your existing pokedex, to update poketerm simply pull from main and run the installer with the update flag:
+Updating poketerm will not lose any of your existing pokedex. Pull changes and run the installer with the update flag:
 
 1. Run the installer:
 
@@ -46,9 +47,15 @@ Updating poketerm will not lose any of your existing pokedex, to update poketerm
 
 This will:
 
-- Format any updates to the $HOME/.local/share/poketerm/pokedex.txt
-- Install or link the `pokedex` helper script to /usr/local/bin/pokedex
-- Update the existing script in your ~/.zshrc
+- Run any necessary migrations from the bundled migrations/ directory to bring your pokedex and generated files up to date.
+- Format any updates to $HOME/.local/share/poketerm/pokedex.txt
+- Reinstall or relink the `pokedex` helper script to /usr/local/bin/pokedex
+- Update the poketerm snippet in your ~/.zshrc so it calls the installed poketerm helper
+
+Current Update Paths:
+
+- 0.0.1 -> 0.0.2
+- 0.0.2 -> 0.0.3
 
 ## Usage
 
@@ -70,9 +77,26 @@ This will:
 - Shell integration: zshrc — snippet that calls `pokemon-colorscripts`, updates pokedex, and displays the sprite via neofetch.
 - Generation lists: gen_files/gen{1..8}_list.txt — canonical ordering used to sort your pokedex per generation.
 
+## Uninstalling
+
+To uninstall poketerm please run the following command:
+
+1. Run the installer:
+
+   ```/bin/bash
+   sudo ./install.sh --uninstall
+   ```
+
+This will:
+
+- Uninstall Hyfetch
+- Uninstall pokemon-colorscripts
+- Uninstall poketerm
+
 ## Notes
 
 - The persistent pokedex is stored at $HOME/.local/share/poketerm/pokedex.txt (see the `POKEDEX_FILE` variable in the bundled script).
+- The installer will apply migrations and take steps to protect the pokedex file (make it harder to accidentally or trivially edit)
 - Generated files and lists are installed to $HOME/.local/share/poketerm/.
 
 ## Contributing
