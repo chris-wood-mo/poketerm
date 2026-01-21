@@ -27,6 +27,12 @@ To install for the first time run:
    sudo ./install.sh
    ```
 
+   Or for installing and using just a specific generation, default is 1-8: 
+   ```
+   ```/bin/bash
+   sudo ./install.sh --gen 1 or sudo ./install.sh --gen 2-5
+   ```
+
 This will:
 
 - Copy generation lists to $HOME/.local/share/poketerm/gen_files
@@ -56,6 +62,7 @@ Current Update Paths:
 
 - 0.0.1 -> 0.0.2
 - 0.0.2 -> 0.0.3
+- 0.0.3 -> 0.0.4: Note after this update to use a specific generation of pokemon you will need to update your zshrc from poketerm -> poketerm --gen 1 or poketerm --gen 2-5.
 
 ## Usage
 

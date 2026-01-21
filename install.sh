@@ -5,7 +5,7 @@ set -euo pipefail
 ### Configuration
 ### =========================
 
-VERSION="0.0.3"
+VERSION="0.0.4"
 
 INSTALL_DIR="$HOME/.local/share/"
 BIN_DIR="/usr/local/bin"
@@ -20,20 +20,47 @@ POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
 
 UPDATE=false
 UNINSTALL=false
+GEN_SPECIFIC=false
+GEN=""
 
 ### =========================
 ### Flag parsing
 ### =========================
 
-for arg in "$@"; do
-    case "$arg" in
-        --update) UPDATE=true ;;
-        --uninstall) UNINSTALL=true ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --gen)
+            GEN_SPECIFIC=true
+            gen="$2"
+            shift
+
+            [[ "$gen" =~ ^[0-9]+(-[0-9]+)?$ ]] || {
+                echo "Error: --gen must be N or N-M (1–8)"
+                exit 1
+            }
+
+            IFS=- read -r start end <<< "$gen"
+            end=${end:-$start}
+
+            (( start >= 1 && end <= 8 && start <= end )) || {
+                echo "Error: generations must be between 1 and 8"
+                exit 1
+            }
+
+            GEN="$gen"
+            ;;
+        --update)
+            UPDATE=true
+            ;;
+        --uninstall)
+            UNINSTALL=true
+            ;;
         *)
-            echo "Unknown flag: $arg"
+            echo "Unknown flag: $1"
             exit 1
             ;;
     esac
+    shift
 done
 
 ### =========================
@@ -88,7 +115,11 @@ ensure_dirs() {
         {
             echo "$ZSHRC_MARKER_BEGIN"
             echo "alias neofetch=neowofetch"
-            echo "poketerm"
+            if [[ "$GEN_SPECIFIC" == true ]]; then
+                echo "poketerm --gen $gen"
+            else
+                echo "poketerm"
+            fi 
             echo "$ZSHRC_MARKER_END"
             echo ""
             cat "$ZSHRC"
@@ -159,7 +190,7 @@ install() {
     chmod 444 "$POKEDEX_FILE"
 
     write_version $VERSION
-    echo "Poketerm installed successfully! To start collecting pokemon run: source zshrc"
+    echo "Poketerm installed successfully! To start collecting pokemon run: source $ZSHRC"
 }
 
 ### =========================
@@ -283,6 +314,21 @@ migrate_002_to_003() {
     write_version "0.0.3"
 }
 
+migrate_003_to_004() {
+    sudo -u "$LOCAL_USER" cp -f files/$VERSION/poketerm $INSTALL_DIR/poketerm
+    sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/poketerm
+
+    # create symlink in usr/bin if not present
+    if [ ! -e $BIN_DIR/poketerm ]; then
+        ln -s $INSTALL_DIR/poketerm/poketerm $BIN_DIR/poketerm || return 1
+    fi
+
+    echo "To specify a specify pokedex version update the following line in your zshrc file: poketerm -> poketerm --gen N|N-M. e.g. poketerm --gen 1."
+    echo "Poketerm updated successfully from 0.0.3 to 0.0.4!"
+
+    write_version "0.0.4"
+}
+
 ### =========================
 ### Update
 ### =========================
@@ -303,6 +349,10 @@ update() {
             migrate_002_to_003
             ;;
         0.0.3)
+            echo "Target version:    0.0.4"
+            migrate_003_to_004
+            ;;
+        0.0.4)
             echo "Already up to date."
             exit 0
             ;;
