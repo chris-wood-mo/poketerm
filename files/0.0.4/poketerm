@@ -1,0 +1,217 @@
+#!/usr/bin/env zsh
+[[ -n "$POKETERM_RUNNING" ]] && return
+POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
+POKEDEX_HASH="$POKEDEX_FILE.sha256"
+SORTED_FILE="$HOME/.local/share/poketerm/pokedex_sorted.txt"
+GEN_DIR="$HOME/.local/share/poketerm/gen_files"
+VERSION_DIRECTORY="$HOME/.local/share/poketerm/VERSION"
+GEN_COLLECTION_DEFAULT="1-8"
+GEN_COLLECTION="$GEN_COLLECTION_DEFAULT"
+
+# === MAKE POKEDEX FILE IF IT DOESNT EXIST ===
+mkdir -p "$(dirname "$POKEDEX_FILE")"
+touch "$POKEDEX_FILE"
+chmod 444 "$POKEDEX_FILE"
+
+usage() {
+    cat <<'EOF'
+poketerm - Pokemon terminal collection tool
+
+Usage:
+  poketerm [OPTIONS]
+
+Options:
+  -h, --help           Show this help message
+  -v, --version        Show poketerm version
+  -g, --gen N|N-M      Use a specific generation or range (1–8)
+  -r, --remove NAME    Remove a Pokemon from the Pokedex
+  -f, --fix-pokedex    Repair Pokedex after removal
+
+Examples:
+  poketerm --version
+  poketerm --gen 1
+  poketerm --gen 2-5
+  poketerm --remove pikachu
+  poketerm --fix-pokedex
+EOF
+}
+
+case "$1" in
+    -h|--help)
+        usage
+        return 1
+        ;;
+    -v|--version)
+        echo "Version: $(cat $VERSION_DIRECTORY)"
+        return 1
+        ;;
+    -g|--gen)
+        gen="$2"
+
+        [[ "$gen" =~ ^[0-9]+(-[0-9]+)?$ ]] || {
+            echo "Error: --gen must be N or N-M (1–8)"
+            return 1
+        }
+
+        IFS=- read -r start end <<< "$gen"
+        end=${end:-$start}
+
+        (( start >= 1 && end <= 8 && start <= end )) || {
+            echo "Error: generations must be between 1 and 8"
+            return 1
+        }
+
+        GEN_COLLECTION="$gen"
+        ;;
+    -r|--remove)
+        if [[ -n "$2" ]]; then
+            if [[ -f "$POKEDEX_HASH" ]]; then
+                if command -v sha256sum >/dev/null 2>&1; then
+                    sha256sum -c "$POKEDEX_HASH" >/dev/null 2>&1 || true
+                else
+                    shasum -a 256 -c "$POKEDEX_HASH" >/dev/null 2>&1 || { echo "Pokedex modified outside poketerm, please use 'poketerm --remove \"YOUR_ADDED_POKEMON\"' to move the manually added pokemon from the pokedex."; return 1; }
+                fi
+            fi
+
+            if ! grep -Fqi "$2 " "$POKEDEX_FILE"; then
+                echo "Pokémon '$2' not found in pokedex"
+                return 1
+            fi
+
+            chmod 644 "$POKEDEX_FILE"
+            grep -Fvi "$2 " "$POKEDEX_FILE" > "$SORTED_FILE" &&
+            command mv -f "$SORTED_FILE" "$POKEDEX_FILE"
+            chmod 444 "$POKEDEX_FILE"
+
+            if command -v sha256sum >/dev/null 2>&1; then
+                sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
+            else
+                shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+            fi
+
+            return 0
+        else 
+            echo "ERROR: Please specify a pokemon to remove from the pokedex e.g. poketerm --remove pikachu"
+            return 0
+        fi
+        ;;
+    -f|--fix-pokedex)
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
+        else
+            shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+        fi
+        return 0
+esac
+
+if [[ -f "$POKEDEX_HASH" ]]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -c "$POKEDEX_HASH" >/dev/null 2>&1 || { echo "Pokedex modified outside poketerm, please use 'poketerm --remove \"YOUR_ADDED_POKEMON\"' to move the manually added pokemon from the pokedex."; return 1; }
+    else
+        shasum -a 256 -c "$POKEDEX_HASH" >/dev/null 2>&1 || { echo "Pokedex modified outside poketerm, please use 'poketerm --remove \"YOUR_ADDED_POKEMON\"' to move the manually added pokemon from the pokedex."; return 1; }
+    fi
+fi
+
+# === SHINY ROLL (1/4096) ===
+if (( RANDOM % 4096 == 0 )); then
+    shiny=true
+else
+    shiny=false
+fi
+
+# === FETCH POKEMON (Gen 1–8) ===
+if [ "$shiny" = true ]; then
+    raw_output=$(pokemon-colorscripts -r $GEN_COLLECTION -s)
+else
+    raw_output=$(pokemon-colorscripts -r $GEN_COLLECTION)
+fi
+
+name=$(echo "$raw_output" | head -n 1)
+sprite=$(echo "$raw_output" | tail -n +2)
+
+# === FORMAT NAME FOR POKEDEX STORAGE ===
+if [ "$shiny" = true ]; then
+    stored_name="${name}"
+    display_name="\033[33m${name}\033[0m"
+else
+    stored_name="$name"
+    display_name="$name"
+fi
+
+image_source="$(echo -e "$sprite\n$display_name")"
+
+chmod 644 "$POKEDEX_FILE"
+
+# === UPDATE POKEDEX WITH COUNT ===
+awk -v n="$stored_name" '
+{
+    # Split the line into name and count
+    if ($NF ~ /^[0-9]+$/) {
+        count = $NF
+        name = substr($0, 1, length($0)-length($NF))
+        sub(/[ \t]+$/, "", name)
+    } else {
+        name = $0
+        count = 0
+    }
+
+    if (name == n) {
+        count++
+        found=1
+    }
+
+    print name, count
+}
+END {
+    if (!found) print n,1
+}
+' "$POKEDEX_FILE" > "$SORTED_FILE" && command mv -f "$SORTED_FILE" "$POKEDEX_FILE"
+
+# === SORT POKEDEX BY GENERATION ORDER ===
+for GEN_FILE in "$GEN_DIR"/gen*_list.txt; do
+    if grep -qx "$name" "$GEN_FILE"; then
+        awk '
+            NR==FNR { order[$0]=NR; next }
+            {
+                line=$0
+                base=$0
+                sub(/ \(shiny\)$/, "", base)
+                sort_order = (base in order) ? order[base] : 9999
+                print sort_order "\t" line
+            }
+        ' "$GEN_FILE" "$POKEDEX_FILE" \
+        | sort -n \
+        | cut -f2- > "$SORTED_FILE"
+        command mv -f "$SORTED_FILE" "$POKEDEX_FILE"
+        break
+    fi
+done
+
+chmod 444 "$POKEDEX_FILE"
+
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
+else
+    shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+fi
+
+# === SHOW IMAGE IN NEOFETCH ===
+
+NEOFETCH_CFG_TMP="$(mktemp)"
+cat > "$NEOFETCH_CFG_TMP" <<'EOF'
+print_info() {
+    info title
+    info underline
+    info "OS" distro
+    info "Host" model
+    info "Kernel" kernel
+    info "Uptime" uptime
+    info "Packages" packages
+    info "Shell" shell
+    info "Resolution" resolution
+    info "Terminal" term
+}
+EOF
+POKETERM_RUNNING=1 zsh -ic "neofetch --config '$NEOFETCH_CFG_TMP' --source '$image_source'"
+
+rm -f "$NEOFETCH_CFG_TMP"

@@ -1,0 +1,86 @@
+#!/bin/bash
+
+POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
+GEN_DIR="$HOME/.local/share/poketerm/gen_files"
+
+# Determine generation
+GEN_NUM=${1:-1}
+GEN_FILE="$GEN_DIR/gen${GEN_NUM}_list.txt"
+
+if [ ! -f "$GEN_FILE" ]; then
+    echo "Generation $GEN_NUM list not found."
+    exit 1
+fi
+
+if [ ! -f "$POKEDEX_FILE" ]; then
+    echo "You haven't caught any Pokémon yet."
+    exit 1
+fi
+
+# Colors
+red="\033[31m"
+green="\033[32m"
+yellow="\033[33m"
+cyan="\033[36m"
+reset="\033[0m"
+
+echo -e "${red}┌────────────────────── Pokédex ──────────────────────┐${reset}"
+echo -e "${red}│                                                     │${reset}"
+printf    "${red}│${reset}               ${yellow}Generation %s Pokédex${reset}                  ${red}│${reset}\n" "$GEN_NUM"
+echo -e "${red}│                                                     │${reset}"
+echo -e "${red}├─────────────────────────────────────────────────────┤${reset}"
+echo -e "│                                                     │"
+echo -e "│   Pokémon Entries:        Total Caught:             │"
+echo -e "│   ------------------------------------------------  │"
+
+normal_caught_total=0
+shiny_caught_total=0
+unique_total=0
+total=0
+
+while read -r pkm; do
+    total=$((total+1))
+
+    # Extract counts from POKEDEX_FILE
+    normal_count=$(awk -v n="$pkm" '$1=="'"$pkm"'" && NF==2 {print $2}' "$POKEDEX_FILE")
+    shiny_count=$(awk -v n="$pkm" '$1=="'"$pkm"'" && $2=="(shiny)" {print $3}' "$POKEDEX_FILE")
+
+    # Default to 0 if not found
+    normal_count=${normal_count:-0}
+    shiny_count=${shiny_count:-0}
+    total_count=$((normal_count + shiny_count))
+
+    # Symbol states
+    if (( normal_count > 0 )); then
+        sym_normal="${green}✔${reset}"
+        normal_caught_total=$((normal_caught_total+1))
+    else
+        sym_normal="${red}✖${reset}"
+    fi
+
+    if (( shiny_count > 0 )); then
+        sym_shiny="${green}✔${reset}"
+        shiny_caught_total=$((shiny_caught_total+1))
+    else
+        sym_shiny="${yellow}✖${reset}"
+    fi
+
+    if (( total_count > 0 )); then
+        unique_total=$((unique_total+1))
+    fi
+
+    # Printing pokemon entry
+    printf "│   %b%b %-20s ×%-3d                      │\n" \
+        "$sym_normal" "$sym_shiny" "$pkm" "$total_count"
+    echo -e "│   ------------------------------------------------  │"
+
+done < "$GEN_FILE"
+
+echo -e "│                                                     │"
+echo -e "${cyan}├─────────────────────────────────────────────────────┤${reset}"
+printf    "${cyan}│${reset}             ${cyan}Normal caught:${reset}  %3d/%3d                 ${cyan}│${reset}\n" "$normal_caught_total" "$total"
+echo -e "${cyan}├─────────────────────────────────────────────────────┤${reset}"
+printf    "${cyan}│${reset}             ${cyan}Shiny caught:${reset}   %3d/%3d                 ${cyan}│${reset}\n" "$shiny_caught_total" "$total"
+echo -e "${cyan}├─────────────────────────────────────────────────────┤${reset}"
+printf    "${cyan}│${reset}             ${cyan}Unique caught:${reset}  %3d/%3d                 ${cyan}│${reset}\n" "$unique_total" "$total"
+echo -e "${cyan}└─────────────────────────────────────────────────────┘${reset}"
