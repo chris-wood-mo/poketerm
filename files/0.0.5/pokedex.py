@@ -87,7 +87,6 @@ def count_cell(icon, color, value):
     return f"{color}{icon}{RESET} {value:<3}"
 
 def draw(gen, page, cursor, pkm_list, pokedex):
-    # Combined clear and home
     sys.stdout.write("\033[H")
 
     total = len(pkm_list)
@@ -205,13 +204,11 @@ def draw_details(name, has_normal, has_shiny):
     def mid(): print(f"{RED}├{'─'*inner}┤{RESET}")
 
     try:
-        sys.stdout.write("\033[?7l")  # Disable line wrap
+        sys.stdout.write("\033[?7l")
         
-        # Initial clear to wipe the Pokedex list before the detail loop starts
         clear() 
 
         while True:
-            # Move cursor to top-left instead of full clear to prevent flicker
             sys.stdout.write("\033[H")
             
             hr()
@@ -250,9 +247,7 @@ def draw_details(name, has_normal, has_shiny):
                 print(f"{RED}│{RESET} {line}{' '*pad}{RED}│{RESET}")
 
             print(f"{RED}└{'─'*inner}┘{RESET}")
-            
-            # Clear from the bottom of the box to the bottom of the screen
-            # This handles cases where one sprite/entry is shorter than the previous one
+    
             sys.stdout.write("\033[J")
             sys.stdout.flush()
 
@@ -261,7 +256,6 @@ def draw_details(name, has_normal, has_shiny):
                 key = readchar.readkey()
                 if key in (readchar.key.LEFT, readchar.key.RIGHT):
                     current = "normal" if current == "shiny" else "shiny"
-                    # No clear() needed here anymore; the loop will home and overwrite
                 else: 
                     break
             else:
@@ -269,7 +263,7 @@ def draw_details(name, has_normal, has_shiny):
                 readchar.readkey()
                 break
     finally:
-        sys.stdout.write("\033[?7h")  # Re-enable line wrap
+        sys.stdout.write("\033[?7h")
         signal.signal(signal.SIGWINCH, signal.SIG_DFL)
 
 # -----------------------
@@ -334,9 +328,9 @@ def main():
                 n = pokedex.get(pkm, {}).get("normal", 0)
                 s = pokedex.get(pkm, {}).get("shiny", 0)
                 if n > 0 or s > 0:
-                    clear()  # Wipes the list before drawing details
+                    clear()
                     draw_details(pkm, n > 0, s > 0)
-                    clear()  # Wipes the details before returning to the list
+                    clear()
                 else:
                     clear()
                     print(f"{RED}You must catch a normal or shiny version to view more information!{RESET}")
