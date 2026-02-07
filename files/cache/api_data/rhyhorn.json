@@ -1,0 +1,1 @@
+{"id": 111, "types": ["ground", "rock"], "height": 10, "weight": 1150, "stats": [["hp", 80], ["attack", 85], ["defense", 95], ["special-attack", 30], ["special-defense", 30], ["speed", 25]]}

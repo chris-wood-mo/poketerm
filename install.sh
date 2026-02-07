@@ -5,7 +5,7 @@ set -euo pipefail
 ### Configuration
 ### =========================
 
-VERSION="0.0.4"
+VERSION="0.0.5"
 
 INSTALL_DIR="$HOME/.local/share/"
 BIN_DIR="/usr/local/bin"
@@ -157,6 +157,55 @@ install_pokemon_colorscripts() {
 ### Install
 ### =========================
 
+# install() {
+#     echo "Installing poketerm $VERSION"
+
+#     ensure_dirs
+
+#    # moving all the files to appropriate locations
+#     sudo -u "$LOCAL_USER" cp -rf files/gen_files $INSTALL_DIR/poketerm
+#     sudo -u "$LOCAL_USER" cp -rf files/cache $INSTALL_DIR/poketerm
+#     sudo -u "$LOCAL_USER" cp files/$VERSION/pokedex.py files/$VERSION/poketerm $INSTALL_DIR/poketerm
+#     sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/pokedex.py $INSTALL_DIR/poketerm/poketerm
+
+#     # create symlink in usr/bin
+#     rm -rf $BIN_DIR/pokedex $BIN_DIR/poketerm || return 1
+#     ln -s $INSTALL_DIR/poketerm/poketerm $BIN_DIR/poketerm
+#     ln -s $INSTALL_DIR/poketerm/pokedex.py $BIN_DIR/pokedex
+
+#     install_hyfetch
+#     install_pokemon_colorscripts
+
+#     echo "Creating pokedex integrity file"
+#     sudo -u "$LOCAL_USER" touch "$POKEDEX_FILE.sha256"
+#     POKEDEX_HASH="$POKEDEX_FILE.sha256"
+
+#     if [ ! -s "$POKEDEX_FILE" ]; then
+#         if command -v sha256sum >/dev/null 2>&1; then
+#             sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
+#         else
+#             shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+#         fi
+#     fi
+
+#     chmod 444 "$POKEDEX_FILE"
+
+#     write_version $VERSION
+#     echo "-------------------------------------------------------"
+#     echo " Poketerm installed successfully!"
+#     echo "-------------------------------------------------------"
+
+#     if ! python3 -c "import readchar" >/dev/null 2>&1; then
+#         echo -e "\033[33mNote: The 'readchar' Python library is required to run the pokedex.\033[0m"
+#         echo ""
+#         echo "  Standard: pip3 install -r requirements.txt"
+#         echo "  Linux:    sudo apt install python3-readchar (on Debian/Ubuntu)"
+#         echo "-------------------------------------------------------"
+#     fi
+
+#     echo "To start collecting pokemon run: source $ZSHRC"
+# }
+
 install() {
     echo "Installing poketerm $VERSION"
 
@@ -190,7 +239,10 @@ install() {
     chmod 444 "$POKEDEX_FILE"
 
     write_version $VERSION
-    echo "Poketerm installed successfully! To start collecting pokemon run: source $ZSHRC"
+    echo "-------------------------------------------------------"
+    echo " Poketerm installed successfully!"
+    echo "-------------------------------------------------------"
+    echo "To start collecting pokemon run: source $ZSHRC"
 }
 
 ### =========================
@@ -329,6 +381,30 @@ migrate_003_to_004() {
     write_version "0.0.4"
 }
 
+migrate_004_to_005() {
+    rm -rf "$INSTALL_DIR/poketerm/pokedex" "$INSTALL_DIR/poketerm/poketerm"
+    sudo -u "$LOCAL_USER" cp -rf files/cache $INSTALL_DIR/poketerm
+    sudo -u "$LOCAL_USER" cp files/$VERSION/pokedex.py files/$VERSION/poketerm $INSTALL_DIR/poketerm
+    sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/pokedex.py $INSTALL_DIR/poketerm/poketerm
+
+    # create symlink in usr/bin
+    rm -rf $BIN_DIR/pokedex $BIN_DIR/poketerm || return 1
+    ln -s $INSTALL_DIR/poketerm/poketerm $BIN_DIR/poketerm
+    ln -s $INSTALL_DIR/poketerm/pokedex.py $BIN_DIR/pokedex
+
+    if ! python3 -c "import readchar" >/dev/null 2>&1; then
+        echo -e "\033[33mNote: The 'readchar' Python library is required to run the pokedex.\033[0m"
+        echo ""
+        echo "  Standard: pip3 install -r requirements.txt"
+        echo "  Linux:    sudo apt install python3-readchar (on Debian/Ubuntu)"
+        echo "-------------------------------------------------------"
+    fi
+
+    echo "Poketerm updated successfully from 0.0.4 to 0.0.5!"
+
+    write_version "0.0.5"
+}
+
 ### =========================
 ### Update
 ### =========================
@@ -353,6 +429,10 @@ update() {
             migrate_003_to_004
             ;;
         0.0.4)
+            echo "Target version:    0.0.5"
+            migrate_004_to_005
+            ;;
+        0.0.5)
             echo "Already up to date."
             exit 0
             ;;

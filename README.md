@@ -13,9 +13,12 @@ This repository provides a simple workflow to "catch" Pokémon created from poke
 
 ## Requirements
 
-- pokemon-colorscripts (installed by the included installer if missing)
-- hyfetch (installed by the included installer if missing)
+- Homebrew
+- Python3
 - Zsh
+- readchar (Can be installed via `pip3 install -r requirements.txt`)
+- pokemon-colorscripts (installed by the included installer via Homebrew if missing)
+- hyfetch (installed by the included installer via Homebrew if missing)
 
 ## Installation
 
@@ -36,6 +39,7 @@ To install for the first time run:
 This will:
 
 - Copy generation lists to $HOME/.local/share/poketerm/gen_files
+- Copy cache api and sprite data to $HOME/.local/share/poketerm/cache
 - Install or link the `pokedex` helper script to /usr/local/bin/pokedex
 - Install the poketerm shell helper
 - Add the poketerm prompt script into your ~/.zshrc (backups ~/.zshrc to poketerm/zshrc.backup)
@@ -63,6 +67,7 @@ Current Update Paths:
 - 0.0.1 -> 0.0.2
 - 0.0.2 -> 0.0.3
 - 0.0.3 -> 0.0.4: Note after this update to use a specific generation of pokemon you will need to update your zshrc from poketerm -> poketerm --gen 1 or poketerm --gen 2-5.
+- 0.0.4 -> 0.0.5: Note you may need to install the readchar python package, this can be done via `pip3 install -r requirements.txt`.
 
 ## Usage
 
@@ -72,6 +77,7 @@ Current Update Paths:
   Example:
   - `pokedex` (defaults to generation 1)
   - `pokedex 3` (shows generation 3 progress)
+  - `pokedex -h/--help/help` (shows help)
 
 - The capture behavior appended into your shell (see ~/.zshrc) hooks into `pokemon-colorscripts -r 1-8` to display a sprite and will:
   - Add the Pokémon name to the persistent pokedex file (if not already present).
@@ -83,6 +89,7 @@ Current Update Paths:
 - Main helper: pokedex — display your per-generation progress and summary.
 - Shell integration: zshrc — snippet that calls `pokemon-colorscripts`, updates pokedex, and displays the sprite via neofetch.
 - Generation lists: gen_files/gen{1..8}_list.txt — canonical ordering used to sort your pokedex per generation.
+- Cached data: Caches sprites from `pokemon-colorscripts` and pokemon data from pokeapi for faster lookup
 
 ## Uninstalling
 
@@ -105,6 +112,13 @@ This will:
 - The persistent pokedex is stored at $HOME/.local/share/poketerm/pokedex.txt (see the `POKEDEX_FILE` variable in the bundled script).
 - The installer will apply migrations and take steps to protect the pokedex file (make it harder to accidentally or trivially edit)
 - Generated files and lists are installed to $HOME/.local/share/poketerm/.
+- Cached data is installed to $HOME/.local/share/poketerm/.
+
+## Credits
+
+- All the pokemon designs, names, branding etc. are trademarks of [The Pokémon Company](https://www.pokemon.com/uk)
+- [Pokemon-Colorscripts](https://gitlab.com/phoneybadger/pokemon-colorscripts) for the sprites
+- [PokeAPI](https://pokeapi.co/) for the data around the pokemon
 
 ## Contributing
 
@@ -112,4 +126,5 @@ This will:
 
 ## To Do
 
-- A more detailed Pokedex
+- A search feature for the pokedex
+- Add Gen 9 to the pokedex
