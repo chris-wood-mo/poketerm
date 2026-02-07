@@ -4,6 +4,12 @@ Linux collectable terminal Pokédex that captures sprites from the external tool
 
 This repository provides a simple workflow to "catch" Pokémon created from pokemon-colorscripts, keep a persistent pokédex, and view per-generation progress.
 
+
+
+https://github.com/user-attachments/assets/9277514e-d871-4d28-a3ae-59980b39fec3
+
+
+
 ## Features
 
 - Capture a random Pokémon sprite (normal or shiny) using `pokemon-colorscripts`.
