@@ -153,9 +153,9 @@ install_pokemon_colorscripts() {
     fi
 }
 
-## =========================
-## Install
-## =========================
+### =========================
+### Install
+### =========================
 
 install() {
     echo "Installing poketerm $VERSION"
