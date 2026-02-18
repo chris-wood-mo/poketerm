@@ -1,1 +1,35 @@
-{"id": 378, "types": ["ice"], "height": 18, "weight": 1750, "stats": [["hp", 80], ["attack", 50], ["defense", 100], ["special-attack", 100], ["special-defense", 200], ["speed", 50]]}
+{
+  "id": 378,
+  "types": [
+    "ice"
+  ],
+  "height": 18,
+  "weight": 1750,
+  "stats": [
+    [
+      "hp",
+      80
+    ],
+    [
+      "attack",
+      50
+    ],
+    [
+      "defense",
+      100
+    ],
+    [
+      "special-attack",
+      100
+    ],
+    [
+      "special-defense",
+      200
+    ],
+    [
+      "speed",
+      50
+    ]
+  ],
+  "color": "blue"
+}

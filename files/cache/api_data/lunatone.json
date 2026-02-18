@@ -1,1 +1,36 @@
-{"id": 337, "types": ["rock", "psychic"], "height": 10, "weight": 1680, "stats": [["hp", 90], ["attack", 55], ["defense", 65], ["special-attack", 95], ["special-defense", 85], ["speed", 70]]}
+{
+  "id": 337,
+  "types": [
+    "rock",
+    "psychic"
+  ],
+  "height": 10,
+  "weight": 1680,
+  "stats": [
+    [
+      "hp",
+      90
+    ],
+    [
+      "attack",
+      55
+    ],
+    [
+      "defense",
+      65
+    ],
+    [
+      "special-attack",
+      95
+    ],
+    [
+      "special-defense",
+      85
+    ],
+    [
+      "speed",
+      70
+    ]
+  ],
+  "color": "yellow"
+}

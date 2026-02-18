@@ -1,1 +1,36 @@
-{"id": 862, "types": ["dark", "normal"], "height": 16, "weight": 460, "stats": [["hp", 93], ["attack", 90], ["defense", 101], ["special-attack", 60], ["special-defense", 81], ["speed", 95]]}
+{
+  "id": 862,
+  "types": [
+    "dark",
+    "normal"
+  ],
+  "height": 16,
+  "weight": 460,
+  "stats": [
+    [
+      "hp",
+      93
+    ],
+    [
+      "attack",
+      90
+    ],
+    [
+      "defense",
+      101
+    ],
+    [
+      "special-attack",
+      60
+    ],
+    [
+      "special-defense",
+      81
+    ],
+    [
+      "speed",
+      95
+    ]
+  ],
+  "color": "gray"
+}

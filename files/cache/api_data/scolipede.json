@@ -1,1 +1,36 @@
-{"id": 545, "types": ["bug", "poison"], "height": 25, "weight": 2005, "stats": [["hp", 60], ["attack", 100], ["defense", 89], ["special-attack", 55], ["special-defense", 69], ["speed", 112]]}
+{
+  "id": 545,
+  "types": [
+    "bug",
+    "poison"
+  ],
+  "height": 25,
+  "weight": 2005,
+  "stats": [
+    [
+      "hp",
+      60
+    ],
+    [
+      "attack",
+      100
+    ],
+    [
+      "defense",
+      89
+    ],
+    [
+      "special-attack",
+      55
+    ],
+    [
+      "special-defense",
+      69
+    ],
+    [
+      "speed",
+      112
+    ]
+  ],
+  "color": "red"
+}

@@ -1,1 +1,36 @@
-{"id": 639, "types": ["rock", "fighting"], "height": 19, "weight": 2600, "stats": [["hp", 91], ["attack", 129], ["defense", 90], ["special-attack", 72], ["special-defense", 90], ["speed", 108]]}
+{
+  "id": 639,
+  "types": [
+    "rock",
+    "fighting"
+  ],
+  "height": 19,
+  "weight": 2600,
+  "stats": [
+    [
+      "hp",
+      91
+    ],
+    [
+      "attack",
+      129
+    ],
+    [
+      "defense",
+      90
+    ],
+    [
+      "special-attack",
+      72
+    ],
+    [
+      "special-defense",
+      90
+    ],
+    [
+      "speed",
+      108
+    ]
+  ],
+  "color": "gray"
+}

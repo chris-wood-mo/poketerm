@@ -1,0 +1,20 @@
+{
+    "name": "None",
+    "region": "None",
+    "hometown": "None",
+    "created": "None",
+    "favourites": [],
+    "level": 0,
+    "xp": 0,
+    "total_xp": 0,
+    "streak": {
+        "current": 0,
+        "longest": 0,
+        "last_active_date": "1996-02-27"
+    },
+    "daily_catch": {
+        "date": "1996-02-27",
+        "count": 0
+    },
+    "hall_of_fame": []
+}

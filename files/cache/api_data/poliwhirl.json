@@ -1,1 +1,35 @@
-{"id": 61, "types": ["water"], "height": 10, "weight": 200, "stats": [["hp", 65], ["attack", 65], ["defense", 65], ["special-attack", 50], ["special-defense", 50], ["speed", 90]]}
+{
+  "id": 61,
+  "types": [
+    "water"
+  ],
+  "height": 10,
+  "weight": 200,
+  "stats": [
+    [
+      "hp",
+      65
+    ],
+    [
+      "attack",
+      65
+    ],
+    [
+      "defense",
+      65
+    ],
+    [
+      "special-attack",
+      50
+    ],
+    [
+      "special-defense",
+      50
+    ],
+    [
+      "speed",
+      90
+    ]
+  ],
+  "color": "blue"
+}

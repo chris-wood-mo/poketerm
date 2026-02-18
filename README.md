@@ -2,7 +2,7 @@
 
 Linux collectable terminal Pokédex that captures sprites from the external tool `pokemon-colorscripts`.
 
-This repository provides a simple workflow to "catch" Pokémon created from pokemon-colorscripts, keep a persistent pokédex, and view per-generation progress.
+This repository provides a simple workflow to "catch" Pokemon created from pokemon-colorscripts, keep a persistent pokédex, and view per-generation progress.
 
 
 
@@ -12,8 +12,8 @@ https://github.com/user-attachments/assets/9277514e-d871-4d28-a3ae-59980b39fec3
 
 ## Features
 
-- Capture a random Pokémon sprite (normal or shiny) using `pokemon-colorscripts`.
-- Persist caught Pokémon to a user pokédex file.
+- Capture a random Pokemon sprite (normal or shiny) using `pokemon-colorscripts`.
+- Persist caught Pokemon to a user pokédex file.
 - Keep per-generation ordering using the generation lists in gen_files/.
 - View a generation-specific catch progress report.
 
@@ -46,7 +46,7 @@ This will:
 
 - Copy generation lists to $HOME/.local/share/poketerm/gen_files
 - Copy cache api and sprite data to $HOME/.local/share/poketerm/cache
-- Install or link the `pokedex` helper script to /usr/local/bin/pokedex
+- Install or link the `pokedex` helper script to /usr/local/bin/pokedex and other helpers needed to $HOME/.local/share/poketerm/
 - Install the poketerm shell helper
 - Add the poketerm prompt script into your ~/.zshrc (backups ~/.zshrc to poketerm/zshrc.backup)
 
@@ -63,10 +63,7 @@ Updating poketerm will not lose any of your existing pokedex. Pull changes and r
 
 This will:
 
-- Run any necessary migrations from the bundled migrations/ directory to bring your pokedex and generated files up to date.
-- Format any updates to $HOME/.local/share/poketerm/pokedex.txt
-- Reinstall or relink the `pokedex` helper script to /usr/local/bin/pokedex
-- Update the poketerm snippet in your ~/.zshrc so it calls the installed poketerm helper
+- Run any necessary migrations updater
 
 Current Update Paths:
 
@@ -74,6 +71,11 @@ Current Update Paths:
 - 0.0.2 -> 0.0.3
 - 0.0.3 -> 0.0.4: Note after this update to use a specific generation of pokemon you will need to update your zshrc from poketerm -> poketerm --gen 1 or poketerm --gen 2-5.
 - 0.0.4 -> 0.0.5: Note you may need to install the readchar python package, this can be done via `pip3 install -r requirements.txt`.
+- 0.0.5 -> 0.0.6
+
+Upgrade Paths Dropped in Next Release:
+- 0.0.1 -> 0.0.2
+- 0.0.2 -> 0.0.3
 
 ## Usage
 
@@ -85,14 +87,17 @@ Current Update Paths:
   - `pokedex 3` (shows generation 3 progress)
   - `pokedex -h/--help/help` (shows help)
 
+- Navigate from the pokedex to either of the Trainer Profile by pressing `p` or Achievements pages by pressing `a`
+
 - The capture behavior appended into your shell (see ~/.zshrc) hooks into `pokemon-colorscripts -r 1-8` to display a sprite and will:
-  - Add the Pokémon name to the persistent pokedex file (if not already present).
+  - Add the Pokemon name to the persistent pokedex file (if not already present).
   - Mark random 1-in-4096 encounters as shiny.
 
 ## Files of interest
 
 - Installer: install.sh — sets up files and links the pokedex helper.
-- Main helper: pokedex — display your per-generation progress and summary.
+- Main helper: pokedex.py — display your per-generation progress and summary.
+- Other helpers: achievements.py checks and displays achievements collected, trainer.py and trainer.json used to store and display your trainer profile.
 - Shell integration: zshrc — snippet that calls `pokemon-colorscripts`, updates pokedex, and displays the sprite via neofetch.
 - Generation lists: gen_files/gen{1..8}_list.txt — canonical ordering used to sort your pokedex per generation.
 - Cached data: Caches sprites from `pokemon-colorscripts` and pokemon data from pokeapi for faster lookup
@@ -120,9 +125,65 @@ This will:
 - Generated files and lists are installed to $HOME/.local/share/poketerm/.
 - Cached data is installed to $HOME/.local/share/poketerm/.
 
+## Achievements
+
+The list of achievements you can obtain are:
+
+**Pokedex Milestones**
+- First Pokemon Caught
+- 50 Pokemon Caught
+- 100 Pokemon Caught
+- 905 Pokemon Caught
+- HIDDEN
+- Complete Generation 1
+- Complete Generation 2
+- Complete Generation 3
+- Complete Generation 4
+- Complete Generation 5
+- Complete Generation 6
+- Complete Generation 7
+- Complete Generation 8
+- HIDDEN
+
+**Catch Achievements**
+- 3 Day Catch Streak
+- 7 Day Catch Streak
+- 30 Day Catch Streak
+- 100 Day Catch Streak
+- 365 Day Catch Streak
+- HIDDEN
+- Caught 5 Shiny Pokemon
+- Caught 100 Shiny Pokemon
+- Caught 5 Pokemon in a day
+- Caught 10 Pokemon in a day
+- HIDDEN
+- Caught a Pokemon 10 times
+- Caught a Pokemon 25 times
+
+**Level Milestones**
+- Reach level 10
+- Reach level 25
+- HIDDEN
+- Reach a total XP of 1000
+- Reach a total XP of 10000
+- Reach a total XP of 50000
+- HIDDEN
+
+**Special Collections**
+- HIDDEN
+- HIDDEN
+- HIDDEN
+- HIDDEN
+- HIDDEN
+- HIDDEN
+- HIDDEN
+- HIDDEN
+
+There are 42 achievements in total for you to unlock. Some have been left hidden purposly so you can unlock them as you continue collecting!
+
 ## Credits
 
-- All the pokemon designs, names, branding etc. are trademarks of [The Pokémon Company](https://www.pokemon.com/uk)
+- All the pokemon designs, names, branding etc. are trademarks of [The Pokemon Company](https://www.pokemon.com/uk)
 - [Pokemon-Colorscripts](https://gitlab.com/phoneybadger/pokemon-colorscripts) for the sprites
 - [PokeAPI](https://pokeapi.co/) for the data around the pokemon
 
@@ -133,4 +194,4 @@ This will:
 ## To Do
 
 - A search feature for the pokedex
-- Add Gen 9 to the pokedex
+- Add Gen 9 to the pokedex, open PR needs to be merged with pokemon-colorscripts

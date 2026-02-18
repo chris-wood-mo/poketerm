@@ -1,1 +1,36 @@
-{"id": 203, "types": ["normal", "psychic"], "height": 15, "weight": 415, "stats": [["hp", 70], ["attack", 80], ["defense", 65], ["special-attack", 90], ["special-defense", 65], ["speed", 85]]}
+{
+  "id": 203,
+  "types": [
+    "normal",
+    "psychic"
+  ],
+  "height": 15,
+  "weight": 415,
+  "stats": [
+    [
+      "hp",
+      70
+    ],
+    [
+      "attack",
+      80
+    ],
+    [
+      "defense",
+      65
+    ],
+    [
+      "special-attack",
+      90
+    ],
+    [
+      "special-defense",
+      65
+    ],
+    [
+      "speed",
+      85
+    ]
+  ],
+  "color": "yellow"
+}

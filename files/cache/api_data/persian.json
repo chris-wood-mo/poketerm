@@ -1,1 +1,35 @@
-{"id": 53, "types": ["normal"], "height": 10, "weight": 320, "stats": [["hp", 65], ["attack", 70], ["defense", 60], ["special-attack", 65], ["special-defense", 65], ["speed", 115]]}
+{
+  "id": 53,
+  "types": [
+    "normal"
+  ],
+  "height": 10,
+  "weight": 320,
+  "stats": [
+    [
+      "hp",
+      65
+    ],
+    [
+      "attack",
+      70
+    ],
+    [
+      "defense",
+      60
+    ],
+    [
+      "special-attack",
+      65
+    ],
+    [
+      "special-defense",
+      65
+    ],
+    [
+      "speed",
+      115
+    ]
+  ],
+  "color": "yellow"
+}

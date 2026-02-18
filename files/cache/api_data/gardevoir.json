@@ -1,1 +1,36 @@
-{"id": 282, "types": ["psychic", "fairy"], "height": 16, "weight": 484, "stats": [["hp", 68], ["attack", 65], ["defense", 65], ["special-attack", 125], ["special-defense", 115], ["speed", 80]]}
+{
+  "id": 282,
+  "types": [
+    "psychic",
+    "fairy"
+  ],
+  "height": 16,
+  "weight": 484,
+  "stats": [
+    [
+      "hp",
+      68
+    ],
+    [
+      "attack",
+      65
+    ],
+    [
+      "defense",
+      65
+    ],
+    [
+      "special-attack",
+      125
+    ],
+    [
+      "special-defense",
+      115
+    ],
+    [
+      "speed",
+      80
+    ]
+  ],
+  "color": "white"
+}
