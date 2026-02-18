@@ -174,7 +174,7 @@ def get_rank(level):
     for (low, high), (title, colour_name) in RANK_TIERS.items():
         if low <= level <= high:
             colour_id = COLOR_MAP[colour_name]
-            return f"\033[48;5;{colour_id}m\033[30;1m ✦ {title} ✦ {RESET}"
+            return f"\033[48;5;{colour_id}m\033[38;5;16m ✦ {title} ✦ {RESET}"
 
 def update_streak():
     if not TRAINER_FILE.exists():
@@ -428,7 +428,7 @@ def render_trainer_profile(gen_progress):
             print(line(f"Longest Catch Streak: {streak_longest}"))
             print(line(f"Last Catch Date:      {streak_last_date}"))
             print(dashed_line())
-            print(line(f"{INVERT}  ✦ Pokédex Completion ✦  {RESET}"))
+            print(line(f"{INVERT}  ✦ Pokedex Completion ✦  {RESET}"))
             print(line())
 
             for gen in sorted(gen_progress):
@@ -446,7 +446,7 @@ def render_trainer_profile(gen_progress):
             for i, dex in enumerate(favourites, 1):
                 name = get_pokemon_name(dex)
                 bg_val = get_pokemon_color_code(name)
-                ansi = f"\033[48;5;{bg_val}m\033[30;1m"
+                ansi = f"\033[48;5;{bg_val}m\033[38;5;16m"
                 print(line(f"{i}) {ansi} {name.title().center(15)} {RESET} (#{dex})"))
 
             print(dashed_line())
