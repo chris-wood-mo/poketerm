@@ -213,7 +213,7 @@ install() {
 
 migrate_001_to_002() {
     echo "Migrating 0.0.1 → 0.0.2"
-    echo "Updating existing Pokémon script in ~/.zshrc"
+    echo "Updating existing Pokemon script in ~/.zshrc"
 
     sudo -u "$LOCAL_USER" cp "$ZSHRC" ./zshrc_update.backup
     sudo -u "$LOCAL_USER" cp files/0.0.2/pokedex $INSTALL_DIR/poketerm
@@ -251,7 +251,7 @@ migrate_001_to_002() {
     {
         # Check for duplicates
         if ($0 in seen) {
-            print "Error: duplicate Pokémon entry found -> " $0 > "/dev/stderr"
+            print "Error: duplicate Pokemon entry found -> " $0 > "/dev/stderr"
             exit 1
         }
         seen[$0]=1
@@ -287,7 +287,7 @@ migrate_002_to_003() {
     rm -rf $BIN_DIR/poketerm || return 1
     ln -s $INSTALL_DIR/poketerm/poketerm $BIN_DIR/poketerm
 
-    echo "Updating existing Pokémon script in ~/.zshrc"
+    echo "Updating existing Pokemon script in ~/.zshrc"
 
     sudo -u "$LOCAL_USER" cp "$ZSHRC" ./zshrc_update.backup
     sudo -u "$LOCAL_USER" touch "$ZSHRC.tmp"

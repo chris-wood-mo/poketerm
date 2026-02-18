@@ -2,7 +2,7 @@
 
 Linux collectable terminal Pokédex that captures sprites from the external tool `pokemon-colorscripts`.
 
-This repository provides a simple workflow to "catch" Pokémon created from pokemon-colorscripts, keep a persistent pokédex, and view per-generation progress.
+This repository provides a simple workflow to "catch" Pokemon created from pokemon-colorscripts, keep a persistent pokédex, and view per-generation progress.
 
 
 
@@ -12,8 +12,8 @@ https://github.com/user-attachments/assets/9277514e-d871-4d28-a3ae-59980b39fec3
 
 ## Features
 
-- Capture a random Pokémon sprite (normal or shiny) using `pokemon-colorscripts`.
-- Persist caught Pokémon to a user pokédex file.
+- Capture a random Pokemon sprite (normal or shiny) using `pokemon-colorscripts`.
+- Persist caught Pokemon to a user pokédex file.
 - Keep per-generation ordering using the generation lists in gen_files/.
 - View a generation-specific catch progress report.
 
@@ -90,7 +90,7 @@ Upgrade Paths Dropped in Next Release:
 - Navigate from the pokedex to either of the Trainer Profile by pressing `p` or Achievements pages by pressing `a`
 
 - The capture behavior appended into your shell (see ~/.zshrc) hooks into `pokemon-colorscripts -r 1-8` to display a sprite and will:
-  - Add the Pokémon name to the persistent pokedex file (if not already present).
+  - Add the Pokemon name to the persistent pokedex file (if not already present).
   - Mark random 1-in-4096 encounters as shiny.
 
 ## Files of interest
@@ -130,10 +130,10 @@ This will:
 The list of achievements you can obtain are:
 
 **Pokedex Milestones**
-- First Pokémon Caught
-- 50 Pokémon Caught
-- 100 Pokémon Caught
-- 905 Pokémon Caught
+- First Pokemon Caught
+- 50 Pokemon Caught
+- 100 Pokemon Caught
+- 905 Pokemon Caught
 - HIDDEN
 - Complete Generation 1
 - Complete Generation 2
@@ -183,7 +183,7 @@ There are 42 achievements in total for you to unlock. Some have been left hidden
 
 ## Credits
 
-- All the pokemon designs, names, branding etc. are trademarks of [The Pokémon Company](https://www.pokemon.com/uk)
+- All the pokemon designs, names, branding etc. are trademarks of [The Pokemon Company](https://www.pokemon.com/uk)
 - [Pokemon-Colorscripts](https://gitlab.com/phoneybadger/pokemon-colorscripts) for the sprites
 - [PokeAPI](https://pokeapi.co/) for the data around the pokemon
 

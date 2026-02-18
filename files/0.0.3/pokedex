@@ -13,7 +13,7 @@ if [ ! -f "$GEN_FILE" ]; then
 fi
 
 if [ ! -f "$POKEDEX_FILE" ]; then
-    echo "You haven't caught any Pokémon yet."
+    echo "You haven't caught any Pokemon yet."
     exit 1
 fi
 
@@ -30,7 +30,7 @@ printf    "${red}│${reset}               ${yellow}Generation %s Pokédex${rese
 echo -e "${red}│                                                     │${reset}"
 echo -e "${red}├─────────────────────────────────────────────────────┤${reset}"
 echo -e "│                                                     │"
-echo -e "│   Pokémon Entries:        Total Caught:             │"
+echo -e "│   Pokemon Entries:        Total Caught:             │"
 echo -e "│   ------------------------------------------------  │"
 
 normal_caught_total=0

@@ -20,7 +20,7 @@ if [[ "$1" == "--remove" && -n "$2" ]]; then
     fi
 
     if ! grep -Fqi "$2 " "$POKEDEX_FILE"; then
-        echo "Pokémon '$2' not found in pokedex"
+        echo "Pokemon '$2' not found in pokedex"
         return 1
     fi
 

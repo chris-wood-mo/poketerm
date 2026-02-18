@@ -206,7 +206,7 @@ def update_streak():
     TRAINER_FILE.write_text(json.dumps(trainer, indent=2))
 
 # -----------------------
-# Favourite Pokémon Selection
+# Favourite Pokemon Selection
 # -----------------------
 POKEMON_LOOKUP = {}
 MAX_NATIONAL_DEX = 905
@@ -238,8 +238,8 @@ def build_global_lookup():
     return all_pokemon
 
 def choose_favourite_pokemon(max_dex, all_pokemon_list):
-    print("\nChoose 6 favourite Pokémon")
-    print("• Enter a Pokémon name (e.g. Bulbasaur)")
+    print("\nChoose 6 favourite Pokemon")
+    print("• Enter a Pokemon name (e.g. Bulbasaur)")
     print(f"• Or enter a National Dex number (1–{max_dex})")
     print("• No duplicates\n")
 
@@ -260,11 +260,11 @@ def choose_favourite_pokemon(max_dex, all_pokemon_list):
                 print(f"  ✖ Dex number must be between 1 and {max_dex}")
                 continue
         else:
-            print("  ✖ Unknown Pokémon name")
+            print("  ✖ Unknown Pokemon name")
             continue
 
         if dex in favourites:
-            print("  ✖ Pokémon already selected")
+            print("  ✖ Pokemon already selected")
             continue
 
         favourites.append(dex)
@@ -441,7 +441,7 @@ def render_trainer_profile(gen_progress):
             print(line())
             print(line("Shiny chance for completed pokedex's: 1/10."))
             print(dashed_line())
-            print(line(f"{INVERT}  ✦ Favourite Pokémon ✦  {RESET}"))
+            print(line(f"{INVERT}  ✦ Favourite Pokemon ✦  {RESET}"))
             print(line())
             for i, dex in enumerate(favourites, 1):
                 name = get_pokemon_name(dex)

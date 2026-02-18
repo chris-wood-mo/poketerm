@@ -69,7 +69,7 @@ SPECIAL_COLLECTIONS = {
 
     "all_mythicals": {
         "name": "Myth Hunter",
-        "event": "Caught All Mythical Pokémon",
+        "event": "Caught All Mythical Pokemon",
         "category": "special",
         "required": {
             # Gen 1
