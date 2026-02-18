@@ -1,1 +1,36 @@
-{"id": 784, "types": ["dragon", "fighting"], "height": 16, "weight": 782, "stats": [["hp", 75], ["attack", 110], ["defense", 125], ["special-attack", 100], ["special-defense", 105], ["speed", 85]]}
+{
+  "id": 784,
+  "types": [
+    "dragon",
+    "fighting"
+  ],
+  "height": 16,
+  "weight": 782,
+  "stats": [
+    [
+      "hp",
+      75
+    ],
+    [
+      "attack",
+      110
+    ],
+    [
+      "defense",
+      125
+    ],
+    [
+      "special-attack",
+      100
+    ],
+    [
+      "special-defense",
+      105
+    ],
+    [
+      "speed",
+      85
+    ]
+  ],
+  "color": "gray"
+}

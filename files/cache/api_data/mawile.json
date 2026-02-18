@@ -1,1 +1,36 @@
-{"id": 303, "types": ["steel", "fairy"], "height": 6, "weight": 115, "stats": [["hp", 50], ["attack", 85], ["defense", 85], ["special-attack", 55], ["special-defense", 55], ["speed", 50]]}
+{
+  "id": 303,
+  "types": [
+    "steel",
+    "fairy"
+  ],
+  "height": 6,
+  "weight": 115,
+  "stats": [
+    [
+      "hp",
+      50
+    ],
+    [
+      "attack",
+      85
+    ],
+    [
+      "defense",
+      85
+    ],
+    [
+      "special-attack",
+      55
+    ],
+    [
+      "special-defense",
+      55
+    ],
+    [
+      "speed",
+      50
+    ]
+  ],
+  "color": "black"
+}

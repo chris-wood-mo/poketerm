@@ -1,1 +1,36 @@
-{"id": 689, "types": ["rock", "water"], "height": 13, "weight": 960, "stats": [["hp", 72], ["attack", 105], ["defense", 115], ["special-attack", 54], ["special-defense", 86], ["speed", 68]]}
+{
+  "id": 689,
+  "types": [
+    "rock",
+    "water"
+  ],
+  "height": 13,
+  "weight": 960,
+  "stats": [
+    [
+      "hp",
+      72
+    ],
+    [
+      "attack",
+      105
+    ],
+    [
+      "defense",
+      115
+    ],
+    [
+      "special-attack",
+      54
+    ],
+    [
+      "special-defense",
+      86
+    ],
+    [
+      "speed",
+      68
+    ]
+  ],
+  "color": "brown"
+}

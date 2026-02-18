@@ -1,1 +1,36 @@
-{"id": 709, "types": ["ghost", "grass"], "height": 15, "weight": 710, "stats": [["hp", 85], ["attack", 110], ["defense", 76], ["special-attack", 65], ["special-defense", 82], ["speed", 56]]}
+{
+  "id": 709,
+  "types": [
+    "ghost",
+    "grass"
+  ],
+  "height": 15,
+  "weight": 710,
+  "stats": [
+    [
+      "hp",
+      85
+    ],
+    [
+      "attack",
+      110
+    ],
+    [
+      "defense",
+      76
+    ],
+    [
+      "special-attack",
+      65
+    ],
+    [
+      "special-defense",
+      82
+    ],
+    [
+      "speed",
+      56
+    ]
+  ],
+  "color": "brown"
+}

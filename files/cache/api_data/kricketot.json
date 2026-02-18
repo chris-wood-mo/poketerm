@@ -1,1 +1,35 @@
-{"id": 401, "types": ["bug"], "height": 3, "weight": 22, "stats": [["hp", 37], ["attack", 25], ["defense", 41], ["special-attack", 25], ["special-defense", 41], ["speed", 25]]}
+{
+  "id": 401,
+  "types": [
+    "bug"
+  ],
+  "height": 3,
+  "weight": 22,
+  "stats": [
+    [
+      "hp",
+      37
+    ],
+    [
+      "attack",
+      25
+    ],
+    [
+      "defense",
+      41
+    ],
+    [
+      "special-attack",
+      25
+    ],
+    [
+      "special-defense",
+      41
+    ],
+    [
+      "speed",
+      25
+    ]
+  ],
+  "color": "red"
+}

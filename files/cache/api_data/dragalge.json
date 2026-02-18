@@ -1,1 +1,36 @@
-{"id": 691, "types": ["poison", "dragon"], "height": 18, "weight": 815, "stats": [["hp", 65], ["attack", 75], ["defense", 90], ["special-attack", 97], ["special-defense", 123], ["speed", 44]]}
+{
+  "id": 691,
+  "types": [
+    "poison",
+    "dragon"
+  ],
+  "height": 18,
+  "weight": 815,
+  "stats": [
+    [
+      "hp",
+      65
+    ],
+    [
+      "attack",
+      75
+    ],
+    [
+      "defense",
+      90
+    ],
+    [
+      "special-attack",
+      97
+    ],
+    [
+      "special-defense",
+      123
+    ],
+    [
+      "speed",
+      44
+    ]
+  ],
+  "color": "brown"
+}

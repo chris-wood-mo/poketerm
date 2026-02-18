@@ -1,1 +1,36 @@
-{"id": 697, "types": ["rock", "dragon"], "height": 25, "weight": 2700, "stats": [["hp", 82], ["attack", 121], ["defense", 119], ["special-attack", 69], ["special-defense", 59], ["speed", 71]]}
+{
+  "id": 697,
+  "types": [
+    "rock",
+    "dragon"
+  ],
+  "height": 25,
+  "weight": 2700,
+  "stats": [
+    [
+      "hp",
+      82
+    ],
+    [
+      "attack",
+      121
+    ],
+    [
+      "defense",
+      119
+    ],
+    [
+      "special-attack",
+      69
+    ],
+    [
+      "special-defense",
+      59
+    ],
+    [
+      "speed",
+      71
+    ]
+  ],
+  "color": "red"
+}

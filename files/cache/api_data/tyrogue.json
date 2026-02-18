@@ -1,1 +1,35 @@
-{"id": 236, "types": ["fighting"], "height": 7, "weight": 210, "stats": [["hp", 35], ["attack", 35], ["defense", 35], ["special-attack", 35], ["special-defense", 35], ["speed", 35]]}
+{
+  "id": 236,
+  "types": [
+    "fighting"
+  ],
+  "height": 7,
+  "weight": 210,
+  "stats": [
+    [
+      "hp",
+      35
+    ],
+    [
+      "attack",
+      35
+    ],
+    [
+      "defense",
+      35
+    ],
+    [
+      "special-attack",
+      35
+    ],
+    [
+      "special-defense",
+      35
+    ],
+    [
+      "speed",
+      35
+    ]
+  ],
+  "color": "purple"
+}

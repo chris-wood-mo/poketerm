@@ -1,1 +1,36 @@
-{"id": 70, "types": ["grass", "poison"], "height": 10, "weight": 64, "stats": [["hp", 65], ["attack", 90], ["defense", 50], ["special-attack", 85], ["special-defense", 45], ["speed", 55]]}
+{
+  "id": 70,
+  "types": [
+    "grass",
+    "poison"
+  ],
+  "height": 10,
+  "weight": 64,
+  "stats": [
+    [
+      "hp",
+      65
+    ],
+    [
+      "attack",
+      90
+    ],
+    [
+      "defense",
+      50
+    ],
+    [
+      "special-attack",
+      85
+    ],
+    [
+      "special-defense",
+      45
+    ],
+    [
+      "speed",
+      55
+    ]
+  ],
+  "color": "green"
+}

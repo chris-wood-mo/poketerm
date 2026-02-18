@@ -1,1 +1,36 @@
-{"id": 717, "types": ["dark", "flying"], "height": 58, "weight": 2030, "stats": [["hp", 126], ["attack", 131], ["defense", 95], ["special-attack", 131], ["special-defense", 98], ["speed", 99]]}
+{
+  "id": 717,
+  "types": [
+    "dark",
+    "flying"
+  ],
+  "height": 58,
+  "weight": 2030,
+  "stats": [
+    [
+      "hp",
+      126
+    ],
+    [
+      "attack",
+      131
+    ],
+    [
+      "defense",
+      95
+    ],
+    [
+      "special-attack",
+      131
+    ],
+    [
+      "special-defense",
+      98
+    ],
+    [
+      "speed",
+      99
+    ]
+  ],
+  "color": "red"
+}

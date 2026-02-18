@@ -1,1 +1,36 @@
-{"id": 80, "types": ["water", "psychic"], "height": 16, "weight": 785, "stats": [["hp", 95], ["attack", 75], ["defense", 110], ["special-attack", 100], ["special-defense", 80], ["speed", 30]]}
+{
+  "id": 80,
+  "types": [
+    "water",
+    "psychic"
+  ],
+  "height": 16,
+  "weight": 785,
+  "stats": [
+    [
+      "hp",
+      95
+    ],
+    [
+      "attack",
+      75
+    ],
+    [
+      "defense",
+      110
+    ],
+    [
+      "special-attack",
+      100
+    ],
+    [
+      "special-defense",
+      80
+    ],
+    [
+      "speed",
+      30
+    ]
+  ],
+  "color": "pink"
+}

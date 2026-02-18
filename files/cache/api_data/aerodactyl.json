@@ -1,1 +1,36 @@
-{"id": 142, "types": ["rock", "flying"], "height": 18, "weight": 590, "stats": [["hp", 80], ["attack", 105], ["defense", 65], ["special-attack", 60], ["special-defense", 75], ["speed", 130]]}
+{
+  "id": 142,
+  "types": [
+    "rock",
+    "flying"
+  ],
+  "height": 18,
+  "weight": 590,
+  "stats": [
+    [
+      "hp",
+      80
+    ],
+    [
+      "attack",
+      105
+    ],
+    [
+      "defense",
+      65
+    ],
+    [
+      "special-attack",
+      60
+    ],
+    [
+      "special-defense",
+      75
+    ],
+    [
+      "speed",
+      130
+    ]
+  ],
+  "color": "purple"
+}

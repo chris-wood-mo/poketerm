@@ -5,7 +5,7 @@ set -euo pipefail
 ### Configuration
 ### =========================
 
-VERSION="0.0.5"
+VERSION="0.0.6"
 
 INSTALL_DIR="$HOME/.local/share/"
 BIN_DIR="/usr/local/bin"
@@ -143,10 +143,11 @@ install_hyfetch() {
 install_pokemon_colorscripts() {
     # Install pokemon-colorscripts
     if ! command -v pokemon-colorscripts >/dev/null 2>&1; then
+        echo "pokemon-colorscripts not found. Installing..."
         rm -rf "$INSTALL_DIR"pokemon-colorscripts || return 1
-        git clone https://gitlab.com/phoneybadger/pokemon-colorscripts.git "$INSTALL_DIR"pokemon-colorscripts
+        git clone https://gitlab.com/phoneybadger/pokemon-colorscripts.git "$INSTALL_DIR"pokemon-colorscripts >/dev/null 2>&1
         cd "$INSTALL_DIR"pokemon-colorscripts
-        sudo "$INSTALL_DIR"pokemon-colorscripts/install.sh
+        sudo "$INSTALL_DIR"pokemon-colorscripts/install.sh >/dev/null 2>&1
         cd -
     else
         echo "pokemon-colorscripts is already installed."
@@ -165,7 +166,7 @@ install() {
    # moving all the files to appropriate locations
     sudo -u "$LOCAL_USER" cp -rf files/gen_files $INSTALL_DIR/poketerm
     sudo -u "$LOCAL_USER" cp -rf files/cache $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" cp files/$VERSION/pokedex.py files/$VERSION/poketerm $INSTALL_DIR/poketerm
+    sudo -u "$LOCAL_USER" cp -r files/$VERSION/* $INSTALL_DIR/poketerm
     sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/pokedex.py $INSTALL_DIR/poketerm/poketerm
 
     # create symlink in usr/bin
@@ -366,6 +367,31 @@ migrate_004_to_005() {
     write_version "0.0.5"
 }
 
+migrate_to_latest_version() {
+    PREV_VERSION="$(installed_version)"
+    rm -rf "$INSTALL_DIR/poketerm/pokedex.py" "$INSTALL_DIR/poketerm/poketerm" "$INSTALL_DIR/poketerm/cache"
+    sudo -u "$LOCAL_USER" cp -rf files/cache $INSTALL_DIR/poketerm
+    sudo -u "$LOCAL_USER" cp -r files/$VERSION/* $INSTALL_DIR/poketerm
+    sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/pokedex.py $INSTALL_DIR/poketerm/poketerm
+
+    # create symlink in usr/bin
+    rm -rf $BIN_DIR/pokedex $BIN_DIR/poketerm || return 1
+    ln -s $INSTALL_DIR/poketerm/poketerm $BIN_DIR/poketerm
+    ln -s $INSTALL_DIR/poketerm/pokedex.py $BIN_DIR/pokedex
+
+    if ! python3 -c "import readchar" >/dev/null 2>&1; then
+        echo -e "\033[33mNote: The 'readchar' Python library is required to run the pokedex.\033[0m"
+        echo ""
+        echo "  Standard: pip3 install -r requirements.txt"
+        echo "  Linux:    sudo apt install python3-readchar (on Debian/Ubuntu)"
+        echo "-------------------------------------------------------"
+    fi
+
+    echo "Poketerm updated successfully from $PREV_VERSION to $VERSION!"
+
+    write_version $VERSION
+}
+
 ### =========================
 ### Update
 ### =========================
@@ -394,6 +420,10 @@ update() {
             migrate_004_to_005
             ;;
         0.0.5)
+            echo "Target version:    0.0.6"
+            migrate_to_latest_version
+            ;;
+        0.0.6)
             echo "Already up to date."
             exit 0
             ;;
@@ -412,6 +442,7 @@ update() {
 uninstall() {
     # Remove poketerm and pokemon-colorscripts directories
     echo "Removing poketerm and pokemon-colorscripts shared directories"
+    sudo "$INSTALL_DIR"pokemon-colorscripts/uninstall.sh
     rm -rf "$INSTALL_DIR/poketerm" "$INSTALL_DIR/pokemon-colorscripts" || return 1
 
     # Uninstall hyfetch if it was installed via Homebrew

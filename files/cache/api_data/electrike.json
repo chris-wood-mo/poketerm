@@ -1,1 +1,35 @@
-{"id": 309, "types": ["electric"], "height": 6, "weight": 152, "stats": [["hp", 40], ["attack", 45], ["defense", 40], ["special-attack", 65], ["special-defense", 40], ["speed", 65]]}
+{
+  "id": 309,
+  "types": [
+    "electric"
+  ],
+  "height": 6,
+  "weight": 152,
+  "stats": [
+    [
+      "hp",
+      40
+    ],
+    [
+      "attack",
+      45
+    ],
+    [
+      "defense",
+      40
+    ],
+    [
+      "special-attack",
+      65
+    ],
+    [
+      "special-defense",
+      40
+    ],
+    [
+      "speed",
+      65
+    ]
+  ],
+  "color": "green"
+}
