@@ -4,11 +4,7 @@ Linux collectable terminal Pokédex that captures sprites from the external tool
 
 This repository provides a simple workflow to "catch" Pokemon created from pokemon-colorscripts, keep a persistent pokédex, and view per-generation progress.
 
-
-
-https://github.com/user-attachments/assets/9277514e-d871-4d28-a3ae-59980b39fec3
-
-
+<https://github.com/user-attachments/assets/9277514e-d871-4d28-a3ae-59980b39fec3>
 
 ## Features
 
@@ -36,8 +32,8 @@ To install for the first time run:
    sudo ./install.sh
    ```
 
-   Or for installing and using just a specific generation, default is 1-8: 
-   ```
+   Or for installing and using just a specific generation, default is 1-8:
+
    ```/bin/bash
    sudo ./install.sh --gen 1 or sudo ./install.sh --gen 2-5
    ```
@@ -74,6 +70,7 @@ Current Update Paths:
 - 0.0.5 -> 0.0.6
 
 Upgrade Paths Dropped in Next Release:
+
 - 0.0.1 -> 0.0.2
 - 0.0.2 -> 0.0.3
 
@@ -130,6 +127,7 @@ This will:
 The list of achievements you can obtain are:
 
 **Pokedex Milestones**
+
 - First Pokemon Caught
 - 50 Pokemon Caught
 - 100 Pokemon Caught
@@ -146,6 +144,7 @@ The list of achievements you can obtain are:
 - HIDDEN
 
 **Catch Achievements**
+
 - 3 Day Catch Streak
 - 7 Day Catch Streak
 - 30 Day Catch Streak
@@ -161,6 +160,7 @@ The list of achievements you can obtain are:
 - Caught a Pokemon 25 times
 
 **Level Milestones**
+
 - Reach level 10
 - Reach level 25
 - HIDDEN
@@ -170,6 +170,7 @@ The list of achievements you can obtain are:
 - HIDDEN
 
 **Special Collections**
+
 - HIDDEN
 - HIDDEN
 - HIDDEN
