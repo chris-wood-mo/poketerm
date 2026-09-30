@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import re
+import fcntl
 import readchar
 from pathlib import Path
 from datetime import date
@@ -210,13 +211,32 @@ def clear():
 # -----------------------------
 
 def load_trainer():
-    if TRAINER_FILE.exists():
-        return json.loads(TRAINER_FILE.read_text())
-    return {"hall_of_fame": []}
+    if not TRAINER_FILE.exists():
+        return {"hall_of_fame": []}
+
+    try:
+        data = json.loads(TRAINER_FILE.read_text())
+        return data if isinstance(data, dict) else {"hall_of_fame": []}
+    except (json.JSONDecodeError, OSError):
+        return {"hall_of_fame": []}
 
 
 def save_trainer(data):
-    TRAINER_FILE.write_text(json.dumps(data, indent=2))
+    if not isinstance(data, dict):
+        data = {"hall_of_fame": []}
+
+    TRAINER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = TRAINER_FILE.with_suffix(".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            tmp_path = TRAINER_FILE.with_suffix(".tmp")
+            with tmp_path.open("w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+                fh.write("\n")
+            os.replace(tmp_path, TRAINER_FILE)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def unlock(trainer, name, event, category):

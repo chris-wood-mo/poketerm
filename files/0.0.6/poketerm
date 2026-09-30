@@ -1,5 +1,6 @@
 #!/usr/bin/env zsh
-[[ -n "$POKETERM_RUNNING" ]] && return
+[[ -n "${POKETERM_RUNNING:-}" ]] && return 0
+export POKETERM_RUNNING=1
 POKETERM_PATH="$HOME/.local/share/poketerm"
 POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
 POKEDEX_HASH="$POKEDEX_FILE.sha256"
@@ -184,14 +185,16 @@ else
     xp_to_add=10
 fi
 
-PYTHONPATH="$POKETERM_PATH" python3 -c "
+PYTHONPATH="$POKETERM_PATH" python3 - "$xp_to_add" <<'PY' 2>/dev/null
 from trainer import add_xp, update_streak
 from achievements import check_pokedex_achievements, update_daily_catch
-add_xp($xp_to_add)
+import sys
+
+add_xp(int(sys.argv[1]))
 update_streak()
 update_daily_catch()
 check_pokedex_achievements()
-" 2>/dev/null & 
+PY
 
 image_source="$(echo -e "$sprite\n$display_name")"
 
@@ -265,6 +268,12 @@ print_info() {
     info "Terminal" term
 }
 EOF
-POKETERM_RUNNING=1 zsh -ic "neofetch --config '$NEOFETCH_CFG_TMP' --source '$image_source'"
+if command -v neowofetch >/dev/null 2>&1; then
+    POKETERM_RUNNING=1 neowofetch --config "$NEOFETCH_CFG_TMP" --source "$image_source" || true
+elif command -v neofetch >/dev/null 2>&1; then
+    POKETERM_RUNNING=1 neofetch --config "$NEOFETCH_CFG_TMP" --source "$image_source" || true
+else
+    printf '%s\n' "$sprite"
+fi
 
 rm -f "$NEOFETCH_CFG_TMP"

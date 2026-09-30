@@ -4,6 +4,7 @@ import json
 import sys
 import re
 import os
+import fcntl
 import readchar
 import urllib.request
 import json
@@ -146,29 +147,88 @@ def get_pokemon_color_code(pokemon_name: str) -> int:
     except Exception:
         return 15
 
+def _normalize_trainer(trainer):
+    if not isinstance(trainer, dict):
+        trainer = {}
+
+    trainer.setdefault("name", "None")
+    trainer.setdefault("region", "")
+    trainer.setdefault("hometown", "")
+    trainer.setdefault("created", date.today().isoformat())
+    trainer.setdefault("favourites", [])
+    trainer.setdefault("level", 0)
+    trainer.setdefault("xp", 0)
+    trainer.setdefault("total_xp", 0)
+    trainer.setdefault("hall_of_fame", [])
+
+    streak = trainer.setdefault("streak", {})
+    if not isinstance(streak, dict):
+        streak = {}
+        trainer["streak"] = streak
+    streak.setdefault("current", 0)
+    streak.setdefault("longest", 0)
+    streak.setdefault("last_active_date", date.today().isoformat())
+
+    daily = trainer.setdefault("daily_catch", {})
+    if not isinstance(daily, dict):
+        daily = {}
+        trainer["daily_catch"] = daily
+    daily.setdefault("date", date.today().isoformat())
+    daily.setdefault("count", 0)
+
+    return trainer
+
+
+def _write_trainer(trainer):
+    TRAINER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = TRAINER_FILE.with_suffix(".tmp")
+    with tmp_path.open("w", encoding="utf-8") as fh:
+        json.dump(trainer, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp_path, TRAINER_FILE)
+
+
+def _locked_trainer_update(update_fn):
+    TRAINER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = TRAINER_FILE.with_suffix(".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            if TRAINER_FILE.exists():
+                try:
+                    trainer = json.loads(TRAINER_FILE.read_text())
+                except (json.JSONDecodeError, OSError):
+                    trainer = {}
+            else:
+                trainer = {}
+            updated = update_fn(_normalize_trainer(trainer))
+            _write_trainer(updated)
+            return updated
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def add_xp(xp_amount):
-    if TRAINER_FILE.exists():
-        trainer = load_trainer_profile(update_stats=True)
-        trainer.setdefault("xp", 0)
-        trainer.setdefault("total_xp", 0)
-        trainer.setdefault("level", 0)
-        
-        trainer["xp"] += xp_amount
-        trainer["total_xp"] += xp_amount
-        
+    def update(trainer):
+        trainer["xp"] = trainer.get("xp", 0) + xp_amount
+        trainer["total_xp"] = trainer.get("total_xp", 0) + xp_amount
+
         while True:
             if trainer["level"] >= 50:
                 cost = 25500
             else:
                 cost = (trainer["level"] + 1) * 500
-                
+
             if trainer["xp"] >= cost:
                 trainer["xp"] -= cost
                 trainer["level"] += 1
             else:
                 break
-                
-        TRAINER_FILE.write_text(json.dumps(trainer, indent=2))
+
+        return trainer
+
+    _locked_trainer_update(update)
+
 
 def get_rank(level):
     for (low, high), (title, colour_name) in RANK_TIERS.items():
@@ -177,33 +237,34 @@ def get_rank(level):
             return f"\033[48;5;{colour_id}m\033[38;5;16m ✦ {title} ✦ {RESET}"
 
 def update_streak():
-    if not TRAINER_FILE.exists():
-        return
+    def update(trainer):
+        today = date.today()
+        today_str = today.isoformat()
+        last_date_str = trainer.get('streak', {}).get('last_active_date', today_str)
 
-    trainer = load_trainer_profile(update_stats=True)
-    # today = (date.today() + timedelta(days=5)) #FOR TESTING
-    today = date.today()
-    today_str = today.isoformat()
-    last_date_str = trainer['streak']['last_active_date']
-    last_date = date.fromisoformat(last_date_str)
+        try:
+            last_date = date.fromisoformat(last_date_str)
+        except ValueError:
+            last_date = today - timedelta(days=1)
 
-    if last_date < today:
-        trainer['daily_catch']['count'] = 0
-        trainer['daily_catch']['date'] = today_str
+        if last_date < today:
+            trainer['daily_catch']['count'] = 0
+            trainer['daily_catch']['date'] = today_str
 
-    if last_date == today:
-        pass 
-    elif last_date == today - timedelta(days=1):
-        trainer['streak']['current'] += 1
-    else:
-        trainer['streak']['current'] = 1
+        if last_date == today:
+            pass
+        elif last_date == today - timedelta(days=1):
+            trainer['streak']['current'] += 1
+        else:
+            trainer['streak']['current'] = 1
 
-    if trainer['streak']['current'] > trainer['streak']['longest']:
-        trainer['streak']['longest'] = trainer['streak']['current']
+        if trainer['streak']['current'] > trainer['streak']['longest']:
+            trainer['streak']['longest'] = trainer['streak']['current']
 
-    trainer['streak']['last_active_date'] = today_str
+        trainer['streak']['last_active_date'] = today_str
+        return trainer
 
-    TRAINER_FILE.write_text(json.dumps(trainer, indent=2))
+    _locked_trainer_update(update)
 
 # -----------------------
 # Favourite Pokemon Selection

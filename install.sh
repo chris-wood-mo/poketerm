@@ -15,13 +15,19 @@ ZSHRC_MARKER_BEGIN="# >>> POKETERM SCRIPT BEGIN >>>"
 ZSHRC_MARKER_END="# <<< POKETERM SCRIPT END <<<"
 
 VERSION_FILE="$INSTALL_DIR/poketerm/VERSION"
-LOCAL_USER="${SUDO_USER:-$(logname)}"
+LOCAL_USER="${SUDO_USER:-${USER:-$(logname 2>/dev/null || echo root)}}"
 POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
 
 UPDATE=false
 UNINSTALL=false
 GEN_SPECIFIC=false
 GEN=""
+
+ensure_zshrc_exists() {
+    if [[ ! -f "$ZSHRC" ]]; then
+        touch "$ZSHRC"
+    fi
+}
 
 ### =========================
 ### Flag parsing
@@ -95,38 +101,44 @@ installed_version() {
 }
 
 ensure_dirs() {
-    if ! grep -Fxq "$ZSHRC_MARKER_BEGIN" "$ZSHRC"; then
-        # deleting directory if it already exists
+    ensure_zshrc_exists
+
+    if grep -Fxq "$ZSHRC_MARKER_BEGIN" "$ZSHRC"; then
+        local filtered
+        filtered=$(mktemp)
+        awk -v begin="$ZSHRC_MARKER_BEGIN" -v end="$ZSHRC_MARKER_END" '
+            BEGIN { skip = 0 }
+            $0 == begin { skip = 1; next }
+            skip && $0 == end { skip = 0; next }
+            !skip { print }
+        ' "$ZSHRC" > "$filtered"
+        mv "$filtered" "$ZSHRC"
+    else
         rm -rf "$INSTALL_DIR/poketerm" || return 1
-
-        # Ensure run directory exists and clean it up
         sudo -u "$LOCAL_USER" mkdir -p "$INSTALL_DIR/poketerm"
-
-        # Create pokedex file
         sudo -u "$LOCAL_USER" touch "$INSTALL_DIR/poketerm/pokedex.txt"
 
         echo "Backing up ~/.zshrc to poketerm directory $(pwd)/zshrc.backup. Please keep this file for the uninstall script."
-
         sudo -u "$LOCAL_USER" cp "$ZSHRC" ./zshrc.backup
-
-        echo "Prepending Pokemon script into ~/.zshrc"
-
-        sudo -u "$LOCAL_USER" touch "$ZSHRC.tmp"
-        {
-            echo "$ZSHRC_MARKER_BEGIN"
-            echo "alias neofetch=neowofetch"
-            if [[ "$GEN_SPECIFIC" == true ]]; then
-                echo "poketerm --gen $gen"
-            else
-                echo "poketerm"
-            fi 
-            echo "$ZSHRC_MARKER_END"
-            echo ""
-            cat "$ZSHRC"
-        } >> "$ZSHRC.tmp"
-
-        mv "$ZSHRC.tmp" "$ZSHRC"
     fi
+
+    echo "Appending Pokemon bootstrap to the end of ~/.zshrc"
+    {
+        printf '\n%s\n' "$ZSHRC_MARKER_BEGIN"
+        if command -v neowofetch >/dev/null 2>&1; then
+            printf 'alias neofetch=neowofetch\n'
+        elif command -v neofetch >/dev/null 2>&1; then
+            printf 'alias neofetch=neofetch\n'
+        fi
+        printf 'if command -v poketerm >/dev/null 2>&1; then\n'
+        if [[ "$GEN_SPECIFIC" == true ]]; then
+            printf '  poketerm --gen %s\n' "$gen"
+        else
+            printf '  poketerm\n'
+        fi
+        printf 'fi\n'
+        printf '%s\n' "$ZSHRC_MARKER_END"
+    } >> "$ZSHRC"
 }
 
 install_hyfetch() {
@@ -137,6 +149,15 @@ install_hyfetch() {
         sudo -u "$LOCAL_USER" brew link --overwrite hyfetch >/dev/null 2>&1
     else
         echo "hyfetch is already installed."
+    fi
+}
+
+install_neofetch() {
+    if ! command -v neofetch >/dev/null 2>&1 && ! command -v neowofetch >/dev/null 2>&1; then
+        echo "Neither neofetch nor neowofetch was found. Installing via Homebrew..."
+        if command -v brew >/dev/null 2>&1; then
+            sudo -u "$LOCAL_USER" brew install neofetch >/dev/null 2>&1 || true
+        fi
     fi
 }
 
@@ -175,6 +196,7 @@ install() {
     ln -s $INSTALL_DIR/poketerm/pokedex.py $BIN_DIR/pokedex
 
     install_hyfetch
+    install_neofetch
     install_pokemon_colorscripts
 
     echo "Creating pokedex integrity file"
@@ -298,8 +320,11 @@ migrate_002_to_003() {
         BEGIN {reading_snippet=0}
         $0 == begin {
             print begin
-            print "alias neofetch=neowofetch"
-            print "poketerm"
+            print "if [[ -z \"${POKETERM_BOOTSTRAPPED:-}\" ]]; then"
+            print "  export POKETERM_BOOTSTRAPPED=1"
+            print "  alias neofetch=neowofetch"
+            print "  poketerm"
+            print "fi"
             reading_snippet=1
             next
         }
