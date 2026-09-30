@@ -5,7 +5,7 @@ set -euo pipefail
 ### Configuration
 ### =========================
 
-VERSION="0.1.0"
+VERSION="0.0.7"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 resolve_real_home() {
@@ -37,9 +37,25 @@ if [[ -n "${ZSHRC:-}" && "${ZSHRC}" == /private/tmp/* ]]; then
     ZSHRC="${REAL_HOME}/.zshrc"
 fi
 
-INSTALL_ROOT="${POKETERM_INSTALL_ROOT:-${REAL_HOME}/.local}"
-BIN_DIR="${POKETERM_BIN_DIR:-${REAL_HOME}/.local/bin}"
-ZSHRC="${POKETERM_ZSHRC:-${ZSHRC:-${REAL_HOME}/.zshrc}}"
+if [[ -n "${POKETERM_INSTALL_ROOT+x}" ]]; then
+    INSTALL_ROOT="${POKETERM_INSTALL_ROOT}"
+else
+    INSTALL_ROOT="${REAL_HOME}/.local"
+fi
+
+if [[ -n "${POKETERM_BIN_DIR+x}" ]]; then
+    BIN_DIR="${POKETERM_BIN_DIR}"
+else
+    BIN_DIR="${REAL_HOME}/.local/bin"
+fi
+
+if [[ -n "${POKETERM_ZSHRC+x}" ]]; then
+    ZSHRC="${POKETERM_ZSHRC}"
+elif [[ -n "${ZSHRC:-}" ]]; then
+    ZSHRC="${ZSHRC}"
+else
+    ZSHRC="${REAL_HOME}/.zshrc"
+fi
 
 INSTALL_DIR="$INSTALL_ROOT/share/"
 ZSHRC_MARKER_BEGIN="# >>> POKETERM SCRIPT BEGIN >>>"
@@ -51,7 +67,9 @@ POKEDEX_FILE="$INSTALL_DIR/poketerm/pokedex.txt"
 UPDATE=false
 UNINSTALL=false
 GEN_SPECIFIC=false
+GEN_OVERRIDE_ACTIVE=false
 GEN=""
+ZSHRC_EXPLICIT=false
 
 ensure_zshrc_exists() {
     if [[ -z "$ZSHRC" ]]; then
@@ -60,7 +78,7 @@ ensure_zshrc_exists() {
 
     if [[ ! -f "$ZSHRC" ]]; then
         if ! touch "$ZSHRC" 2>/dev/null; then
-            echo "Unable to write to $ZSHRC; Homebrew is sandboxed and cannot modify your shell startup file here."
+            echo "Unable to write to $ZSHRC. Check the install path and permissions."
             echo "Run: bash ./install.sh --zshrc \"$HOME/.zshrc\" to enable poketerm in your normal shell."
             ZSHRC=""
             return 0
@@ -74,18 +92,6 @@ ensure_zshrc_exists() {
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --install-root)
-            INSTALL_ROOT="$2"
-            shift 2
-            ;;
-        --bin-dir)
-            BIN_DIR="$2"
-            shift 2
-            ;;
-        --zshrc)
-            ZSHRC="$2"
-            shift 2
-            ;;
         --gen)
             GEN_SPECIFIC=true
             gen="$2"
@@ -133,7 +139,16 @@ while [ $# -gt 0 ]; do
 done
 
 INSTALL_DIR="$INSTALL_ROOT/share/"
+ZSHRC_BACKUP_PATH="$INSTALL_DIR/poketerm/zshrc.backup"
 POKEDEX_FILE="$INSTALL_DIR/poketerm/pokedex.txt"
+
+if [[ "$GEN_SPECIFIC" == true ]]; then
+    GEN_OVERRIDE_ACTIVE=true
+fi
+
+if [[ "$ZSHRC_EXPLICIT" == false && "${ZSHRC:-}" == "${REAL_HOME}/.zshrc" && "${HOME:-}" != "${REAL_HOME}" ]]; then
+    ZSHRC=""
+fi
 
 ### =========================
 ### Helpers
@@ -159,6 +174,68 @@ current_files_dir() {
     return 1
 }
 
+remove_zshrc_hook() {
+    if [[ -z "$ZSHRC" || ! -f "$ZSHRC" ]]; then
+        return 0
+    fi
+
+    local filtered
+    filtered=$(mktemp)
+    awk -v begin="$ZSHRC_MARKER_BEGIN" -v end="$ZSHRC_MARKER_END" '
+        BEGIN { skip = 0; prev_blank = 0 }
+        $0 ~ "^[[:space:]]*# >>> POKETERM SCRIPT BEGIN >>>[[:space:]]*$" { skip = 1; next }
+        skip && $0 ~ "^[[:space:]]*# <<< POKETERM SCRIPT END <<<[[:space:]]*$" { skip = 0; next }
+        skip { next }
+        /^[[:space:]]*$/ {
+            if (prev_blank) {
+                next
+            }
+            prev_blank = 1
+            print ""
+            next
+        }
+        {
+            prev_blank = 0
+            print
+        }
+    ' "$ZSHRC" > "$filtered"
+    mv "$filtered" "$ZSHRC"
+}
+
+backup_progress_files() {
+    local preserved_pokedex=""
+    local preserved_trainer=""
+
+    if [[ -f "$POKEDEX_FILE" ]]; then
+        preserved_pokedex="$(mktemp)"
+        cp "$POKEDEX_FILE" "$preserved_pokedex"
+    fi
+
+    if [[ -f "$INSTALL_DIR/poketerm/trainer.json" ]]; then
+        preserved_trainer="$(mktemp)"
+        cp "$INSTALL_DIR/poketerm/trainer.json" "$preserved_trainer"
+    fi
+
+    printf '%s\n%s\n' "$preserved_pokedex" "$preserved_trainer"
+}
+
+restore_progress_files() {
+    local preserved_pokedex="$1"
+    local preserved_trainer="$2"
+
+    if [[ -n "$preserved_pokedex" ]]; then
+        chmod u+w "$POKEDEX_FILE" 2>/dev/null || true
+        cp "$preserved_pokedex" "$POKEDEX_FILE"
+        rm -f "$preserved_pokedex"
+    fi
+
+    if [[ -n "$preserved_trainer" ]]; then
+        chmod u+w "$INSTALL_DIR/poketerm/trainer.json" 2>/dev/null || true
+        cp "$preserved_trainer" "$INSTALL_DIR/poketerm/trainer.json"
+        rm -f "$preserved_trainer"
+    fi
+}
+
 ensure_dirs() {
     ensure_zshrc_exists
 
@@ -168,66 +245,60 @@ ensure_dirs() {
         return 0
     fi
 
-    if grep -Fxq "$ZSHRC_MARKER_BEGIN" "$ZSHRC"; then
-        local filtered
-        filtered=$(mktemp)
-        awk -v begin="$ZSHRC_MARKER_BEGIN" -v end="$ZSHRC_MARKER_END" '
-            BEGIN { skip = 0 }
-            $0 == begin { skip = 1; next }
-            skip && $0 == end { skip = 0; next }
-            !skip { print }
-        ' "$ZSHRC" > "$filtered"
-        mv "$filtered" "$ZSHRC"
-    else
-        mkdir -p "$INSTALL_DIR/poketerm"
-        if [[ ! -f "$INSTALL_DIR/poketerm/pokedex.txt" ]]; then
-            touch "$INSTALL_DIR/poketerm/pokedex.txt"
-        fi
+    mkdir -p "$INSTALL_DIR/poketerm"
 
-        if [[ -n "$ZSHRC" && -f "$ZSHRC" ]]; then
-            echo "Backing up ~/.zshrc to poketerm directory $(pwd)/zshrc.backup. Please keep this file for the uninstall script."
-            cp "$ZSHRC" ./zshrc.backup
-        fi
+    if [[ ! -f "$INSTALL_DIR/poketerm/pokedex.txt" ]]; then
+        touch "$INSTALL_DIR/poketerm/pokedex.txt"
     fi
 
-    if [[ -n "$ZSHRC" ]]; then
-        echo "Appending Pokemon bootstrap to the end of ~/.zshrc"
-        if ! {
-            printf '\n%s\n' "$ZSHRC_MARKER_BEGIN"
-            printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
-            if command -v brew >/dev/null 2>&1; then
-                printf 'brew_bin="$(brew --prefix 2>/dev/null)/bin"\n'
-                printf 'if [[ -n "$brew_bin" && -d "$brew_bin" ]]; then export PATH="$brew_bin:$PATH"; fi\n'
-            fi
-            if command -v neowofetch >/dev/null 2>&1; then
-                printf 'alias neofetch=neowofetch\n'
-            elif command -v neofetch >/dev/null 2>&1; then
-                printf 'alias neofetch=neofetch\n'
-            fi
-            printf 'if command -v poketerm >/dev/null 2>&1; then\n'
-            if [[ "$GEN_SPECIFIC" == true ]]; then
-                printf '  poketerm --gen %s\n' "$gen"
-            else
-                printf '  poketerm\n'
-            fi
-            printf 'fi\n'
-            printf '%s\n' "$ZSHRC_MARKER_END"
-        } >> "$ZSHRC" 2>/dev/null; then
-            echo "Unable to write the shell hook to $ZSHRC because Homebrew is running inside a sandbox."
-            echo "Run: bash ./install.sh --zshrc \"$HOME/.zshrc\" in your regular shell to enable poketerm startup."
-            ZSHRC=""
+    if grep -Eq "^# >>> POKETERM SCRIPT BEGIN >>>$|^# <<< POKETERM SCRIPT END <<<\$" "$ZSHRC"; then
+        remove_zshrc_hook
+    fi
+
+    echo "Appending Pokemon bootstrap to the end of ~/.zshrc"
+    if ! {
+        printf '\n%s\n' "$ZSHRC_MARKER_BEGIN"
+        printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
+        printf 'if command -v poketerm >/dev/null 2>&1; then\n'
+        if [[ "$GEN_OVERRIDE_ACTIVE" == true ]]; then
+            printf '  poketerm --gen %s\n' "$gen"
+        else
+            printf '  poketerm\n'
         fi
-    else
-        echo "Homebrew install detected; skipping shell startup hook injection in the sandboxed home directory."
+        printf 'fi\n'
+        printf '%s\n' "$ZSHRC_MARKER_END"
+    } >> "$ZSHRC" 2>/dev/null; then
+        echo "Unable to write the shell hook to $ZSHRC. Check the target file permissions and try again."
+        echo "Run: bash ./install.sh --zshrc \"$HOME/.zshrc\" in your regular shell to enable poketerm startup."
+        ZSHRC=""
     fi
 }
 
+show_spinner() {
+    local pid="$1"
+    local delay="0.8"
+    local phases=(
+        "Adding Pokemon"
+        "Creating Poke Regions"
+        "Getting the trainers ready for battle"
+        "Finding some Legendary Pokemon"
+    )
+
+    for phase in "${phases[@]}"; do
+        printf '\r\033[K  %s...' "$phase"
+        sleep "$delay"
+    done
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 0.1
+    done
+
+    printf '\r\033[K'
+}
+
 install_hyfetch() {
-    # Install hyfetch
     if ! command -v hyfetch >/dev/null 2>&1; then
-        echo "Hyfetch not found. Installing via Homebrew..."
-        yes | brew install hyfetch >/dev/null 2>&1 || true
-        brew link --overwrite hyfetch >/dev/null 2>&1 || true
+        echo "Hyfetch not found. Install it before running poketerm if you want the optional hyfetch integration."
     else
         echo "hyfetch is already installed."
     fi
@@ -235,10 +306,7 @@ install_hyfetch() {
 
 install_neofetch() {
     if ! command -v neofetch >/dev/null 2>&1 && ! command -v neowofetch >/dev/null 2>&1; then
-        echo "Neither neofetch nor neowofetch was found. Installing via Homebrew..."
-        if command -v brew >/dev/null 2>&1; then
-            yes | brew install neofetch >/dev/null 2>&1 || true
-        fi
+        echo "Neither neofetch nor neowofetch was found. Install one of them before running poketerm."
     fi
 }
 
@@ -268,88 +336,97 @@ install_pokemon_colorscripts() {
 ### =========================
 
 install() {
-    echo "Installing poketerm $VERSION"
+    local install_log
+    install_log="$(mktemp)"
 
-    ensure_dirs
+    (
+        ensure_dirs >/dev/null 2>&1
 
-    local app_files
-    app_files="$(current_files_dir)" || {
-        echo "No current app files found under $REPO_ROOT/files" >&2
-        exit 1
-    }
+        local app_files
+        app_files="$(current_files_dir)" || {
+            echo "No current app files found under $REPO_ROOT/files" >&2
+            exit 1
+        }
 
-    local preserved_pokedex=""
-    local preserved_trainer=""
+        local preserved_pokedex=""
+        local preserved_trainer=""
+        local -a progress_paths=()
+        while IFS= read -r line; do
+            progress_paths+=("$line")
+        done < <(backup_progress_files)
 
-    if [[ -f "$POKEDEX_FILE" ]]; then
-        preserved_pokedex="$(mktemp)"
-        cp "$POKEDEX_FILE" "$preserved_pokedex"
-    fi
+        preserved_pokedex="${progress_paths[0]:-}"
+        preserved_trainer="${progress_paths[1]:-}"
 
-    if [[ -f "$INSTALL_DIR/poketerm/trainer.json" ]]; then
-        preserved_trainer="$(mktemp)"
-        cp "$INSTALL_DIR/poketerm/trainer.json" "$preserved_trainer"
-    fi
+        find "$INSTALL_DIR/poketerm" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
+        cp -rf "$REPO_ROOT/files/gen_files" "$INSTALL_DIR/poketerm"
+        cp -rf "$REPO_ROOT/files/cache" "$INSTALL_DIR/poketerm"
+        cp -r "$app_files"/* "$INSTALL_DIR/poketerm"
+        find "$INSTALL_DIR/poketerm" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
 
-    cp -rf "$REPO_ROOT/files/gen_files" "$INSTALL_DIR/poketerm"
-    cp -rf "$REPO_ROOT/files/cache" "$INSTALL_DIR/poketerm"
-    cp -r "$app_files"/* "$INSTALL_DIR/poketerm"
+        restore_progress_files "$preserved_pokedex" "$preserved_trainer"
 
-    if [[ -n "$preserved_pokedex" ]]; then
-        cp "$preserved_pokedex" "$POKEDEX_FILE"
-        rm -f "$preserved_pokedex"
-    fi
+        chmod +x "$INSTALL_DIR/poketerm/pokedex.py" "$INSTALL_DIR/poketerm/poketerm"
 
-    if [[ -n "$preserved_trainer" ]]; then
-        cp "$preserved_trainer" "$INSTALL_DIR/poketerm/trainer.json"
-        rm -f "$preserved_trainer"
-    fi
+        mkdir -p "$BIN_DIR"
+        rm -rf "$BIN_DIR/pokedex" "$BIN_DIR/poketerm" || return 1
+        ln -s "$INSTALL_DIR/poketerm/poketerm" "$BIN_DIR/poketerm"
+        ln -s "$INSTALL_DIR/poketerm/pokedex.py" "$BIN_DIR/pokedex"
 
-    chmod +x "$INSTALL_DIR/poketerm/pokedex.py" "$INSTALL_DIR/poketerm/poketerm"
+        install_hyfetch >"$install_log" 2>&1 || true
+        install_neofetch >"$install_log" 2>&1 || true
+        install_pokemon_colorscripts >"$install_log" 2>&1 || true
 
-    mkdir -p "$BIN_DIR"
-    rm -rf "$BIN_DIR/pokedex" "$BIN_DIR/poketerm" || return 1
-    ln -s "$INSTALL_DIR/poketerm/poketerm" "$BIN_DIR/poketerm"
-    ln -s "$INSTALL_DIR/poketerm/pokedex.py" "$BIN_DIR/pokedex"
+        printf '%s\n' "$VERSION" > "$INSTALL_DIR/poketerm/VERSION"
 
-    install_hyfetch
-    install_neofetch
-    install_pokemon_colorscripts
+        touch "$POKEDEX_FILE.sha256"
+        POKEDEX_HASH="$POKEDEX_FILE.sha256"
 
-    echo "Creating pokedex integrity file"
-    touch "$POKEDEX_FILE.sha256"
-    POKEDEX_HASH="$POKEDEX_FILE.sha256"
-
-    if [ ! -s "$POKEDEX_FILE" ]; then
-        if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
-        else
-            shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+        if [ ! -s "$POKEDEX_FILE" ]; then
+            if command -v sha256sum >/dev/null 2>&1; then
+                sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
+            else
+                shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+            fi
         fi
-    fi
+    ) >/dev/null 2>&1 &
 
-    chmod 444 "$POKEDEX_FILE"
+    local install_pid=$!
+    show_spinner "$install_pid"
+    wait "$install_pid"
 
+    rm -f "$install_log"
+}
+
+show_install_success() {
     echo "-------------------------------------------------------"
     echo " Poketerm installed successfully!"
     echo "-------------------------------------------------------"
+    echo ""
+    echo "🚀 Ready to catch Pokemons!"
+    echo "Run: source $ZSHRC"
+}
 
-    if [[ -n "$ZSHRC" ]]; then
-        echo "To start collecting pokemon run: source $ZSHRC"
-    else
-        echo "Poketerm is installed. Restart your shell or run: poketerm"
-    fi
+show_upgrade_success() {
+    echo "-------------------------------------------------------"
+    echo " Poketerm upgraded to version $VERSION"
+    echo "-------------------------------------------------------"
+    echo ""
+    echo "🎉 You're all ready to keep catching Pokemon trainer!"
+    echo "Run: source $ZSHRC"
 }
 
 install_or_update() {
     if ! has_existing_install; then
         echo "No existing Poketerm install detected. Installing $VERSION..."
         install
+        show_install_success
         return 0
     fi
 
     echo "Poketerm is already installed. Refreshing the current install..."
     install
+    show_install_success
     return 0
 }
 
@@ -361,11 +438,13 @@ update() {
     if ! has_existing_install; then
         echo "No existing install detected. Installing $VERSION..."
         install
+        show_install_success
         return 0
     fi
 
     echo "Applying the current-version compatibility update..."
     install
+    show_upgrade_success
     return 0
 }
 
@@ -374,24 +453,20 @@ update() {
 ### =========================
 
 uninstall() {
-    # Remove poketerm and pokemon-colorscripts directories
-    echo "Removing poketerm and pokemon-colorscripts shared directories"
+    echo "Removing Poketerm files and app data..."
+
     if [[ -f "$INSTALL_DIR"pokemon-colorscripts/uninstall.sh ]]; then
         "$INSTALL_DIR"pokemon-colorscripts/uninstall.sh
     fi
     rm -rf "$INSTALL_DIR/poketerm" "$INSTALL_DIR/pokemon-colorscripts" || return 1
 
-    # Uninstall hyfetch if it was installed via Homebrew
-    if command -v hyfetch >/dev/null 2>&1; then
-        echo "Uninstalling hyfetch via brew"
-        brew unlink hyfetch >/dev/null 2>&1
-        brew uninstall hyfetch >/dev/null 2>&1
-    fi
+    rm -f "$BIN_DIR/poketerm" "$BIN_DIR/pokedex" "$BIN_DIR/pokemon-colorscripts"
 
-    # If zshrc.backup file exists from when poketerm was installed, restore it
-    if [[ -n "$ZSHRC" && -f "./zshrc.backup" ]]; then
-        echo "Restoring original ~/.zshrc from poketerm/zshrc.backup"
-        cp ./zshrc.backup "$ZSHRC"
+    if [[ -n "$ZSHRC" ]]; then
+        echo ""
+        echo "⚠️  Please remove the Poketerm block from: $ZSHRC"
+        echo "Look for the lines beginning with: # >>> POKETERM SCRIPT BEGIN >>>"
+        echo "and ending with: # <<< POKETERM SCRIPT END <<<"
     fi
 }
 

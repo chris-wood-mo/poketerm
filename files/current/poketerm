@@ -9,6 +9,7 @@ GEN_DIR="$HOME/.local/share/poketerm/gen_files"
 VERSION_DIRECTORY="$HOME/.local/share/poketerm/VERSION"
 GEN_COLLECTION_DEFAULT="1-8"
 GEN_COLLECTION="$GEN_COLLECTION_DEFAULT"
+POKETERM_VERSION="${POKETERM_VERSION:-0.0.7}"
 
 # === MAKE POKEDEX FILE IF IT DOESNT EXIST ===
 mkdir -p "$(dirname "$POKEDEX_FILE")"
@@ -41,11 +42,15 @@ EOF
 case "$1" in
     -h|--help)
         usage
-        return 1
+        return 0
         ;;
     -v|--version)
-        echo "Version: $(cat $VERSION_DIRECTORY)"
-        return 1
+        if [[ -f "$VERSION_DIRECTORY" ]]; then
+            echo "Version: $(cat "$VERSION_DIRECTORY")"
+        else
+            echo "Version: $POKETERM_VERSION"
+        fi
+        return 0
         ;;
     -g|--gen)
         gen="$2"
