@@ -2,13 +2,6 @@
 import sys
 import os
 
-try:
-    import readchar
-except ImportError:
-    print("\n\033[31mError: 'readchar' is not installed.\033[0m")
-    print("Please run: \033[32mpip3 install -r requirements.txt\033[0m from the root of the poketerm repository.\n")
-    sys.exit(1)
-
 import readchar
 import json
 import subprocess

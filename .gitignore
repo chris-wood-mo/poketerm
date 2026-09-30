@@ -5,3 +5,8 @@
 zshrc.backup
 zshrc_update.backup
 pokedex_update.backup
+
+# Tests
+tests/
+Formula/
+__pycache__
