@@ -10,6 +10,28 @@ VERSION_DIRECTORY="$HOME/.local/share/poketerm/VERSION"
 GEN_COLLECTION_DEFAULT="1-8"
 GEN_COLLECTION="$GEN_COLLECTION_DEFAULT"
 
+# === POKEDEX LOCK ===
+# Several terminals often open at once (restored tabs, split panes). Without
+# a lock they overwrite each other's catches, and one can read the pokedex
+# between another's write and its checksum update and wrongly report it as
+# tampered with. Held from the checksum check until the new checksum is
+# written; released automatically if poketerm exits early.
+POKEDEX_LOCK_FD=""
+pokedex_lock() {
+    zmodload zsh/system 2>/dev/null || return 0   # no flock support: carry on unlocked
+    mkdir -p "${POKEDEX_FILE:h}"
+    [[ -e "$POKEDEX_FILE.lock" ]] || : >> "$POKEDEX_FILE.lock"   # zsystem flock won't create it
+    if ! zsystem flock -t 10 -f POKEDEX_LOCK_FD "$POKEDEX_FILE.lock" 2>/dev/null; then
+        echo "poketerm: another poketerm is still updating your Pokedex - skipped this catch."
+        return 1
+    fi
+}
+pokedex_unlock() {
+    [[ -n "$POKEDEX_LOCK_FD" ]] && zsystem flock -u "$POKEDEX_LOCK_FD" 2>/dev/null
+    POKEDEX_LOCK_FD=""
+    return 0
+}
+
 # === MAKE POKEDEX FILE IF IT DOESNT EXIST ===
 mkdir -p "$(dirname "$POKEDEX_FILE")"
 touch "$POKEDEX_FILE"
@@ -84,6 +106,7 @@ case "$1" in
         ;;
     -r|--remove)
         if [[ -n "$2" ]]; then
+            pokedex_lock || return 1
             if [[ -f "$POKEDEX_HASH" ]]; then
                 if command -v sha256sum >/dev/null 2>&1; then
                     sha256sum -c "$POKEDEX_HASH" >/dev/null 2>&1 || true
@@ -115,6 +138,7 @@ case "$1" in
         fi
         ;;
     -f|--fix-pokedex)
+        pokedex_lock || return 1
         if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
         else
@@ -122,6 +146,8 @@ case "$1" in
         fi
         return 0
 esac
+
+pokedex_lock || return 1
 
 if [[ -f "$POKEDEX_HASH" ]]; then
     if command -v sha256sum >/dev/null 2>&1; then
@@ -313,6 +339,7 @@ if command -v sha256sum >/dev/null 2>&1; then
 else
     shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
 fi
+pokedex_unlock
 
 # === AWARD XP + CHECK ACHIEVEMENTS ===
 # Runs after the pokedex is updated so achievements count this catch.

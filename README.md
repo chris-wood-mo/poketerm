@@ -82,7 +82,8 @@ Poketerm prints to the terminal when it starts, so with Powerlevel10k's instant 
 poketerm --update --from .        # install this checkout as a normal (copied) build, e.g. to test before release
 ./release.sh 0.0.8-beta.1         # publish a pre-release - only `poketerm --update --beta` users get it
 ./release.sh 0.0.8                # publish a stable release from main - all users are offered it
-./release.sh 0.0.8 --dry-run      # run every check (syntax, smoke-test install) without publishing
+./release.sh 0.0.8 --dry-run      # run every check (syntax + the full test suite) without publishing
+./test.sh                         # run the end-to-end tests in a throwaway HOME (-v for details)
 ```
 
 `release.sh` checks the version is newer than the last release, the tree is clean, and a fresh install catches a Pokemon and earns XP, then bumps `VERSION`, tags, pushes and creates the GitHub release (needs the [GitHub CLI](https://cli.github.com/)). The version lives only in the `VERSION` file.
