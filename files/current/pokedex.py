@@ -44,6 +44,15 @@ def hide_cursor():
 def show_cursor():
     sys.stdout.write("\033[?25h")
 
+GO_COLORSCRIPTS = Path.home() / ".local/share/pokemon-go-colorscripts/pokemon-go-colorscripts"
+
+def colorscripts_cmd():
+    """Prefer the much faster Go build; it prints identical sprites."""
+    if os.access(GO_COLORSCRIPTS, os.X_OK):
+        return str(GO_COLORSCRIPTS)
+    import shutil
+    return shutil.which("pokemon-go-colorscripts") or "pokemon-colorscripts"
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mK]")
 
 def strip_ansi(s):
@@ -209,7 +218,7 @@ def draw_details(name, has_normal, has_shiny):
             sprites[variant] = cache_sprite.read_text().splitlines()
         else:
             try:
-                args = ["pokemon-colorscripts", "--no-title", "-n", name]
+                args = [colorscripts_cmd(), "--no-title", "-n", name]
                 if variant == "shiny": args.insert(2, "-s")
                 sprites[variant] = subprocess.check_output(args, stderr=subprocess.DEVNULL, text=True).splitlines()
                 cache_sprite.write_text("\n".join(sprites[variant]))

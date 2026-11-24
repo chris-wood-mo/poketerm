@@ -131,18 +131,84 @@ if [[ -f "$POKEDEX_HASH" ]]; then
     fi
 fi
 
-raw_output=$(pokemon-colorscripts -r $GEN_COLLECTION)
-name=$(echo "$raw_output" | head -n 1)
-
-if [[ "$name" == *"(shiny)"* ]]; then
-    base_name=$(echo "$name" | sed -e 's/ (shiny)//g')
-    raw_output=$(pokemon-colorscripts -n "$base_name")
-    name=$(echo "$raw_output" | head -n 1)
-    sprite=$(echo "$raw_output" | tail -n +2)
+# === START SYSTEM INFO IN THE BACKGROUND ===
+# neofetch is the slowest part of startup, so it runs while the Pokemon is
+# caught and XP is awarded, and is only waited for when it's time to draw.
+FETCH_OUT_FILE="$(mktemp)"
+FETCH_CFG_FILE="$(mktemp)"
+FETCH_PID=""
+if command -v neofetch >/dev/null 2>&1; then
+    FETCH_CMD=neofetch
+elif command -v neowofetch >/dev/null 2>&1; then
+    FETCH_CMD=neowofetch
 else
-    base_name="$name"
-    sprite=$(echo "$raw_output" | tail -n +2)
+    FETCH_CMD=""
 fi
+
+# On macOS, neofetch's "Host" lookup alone takes ~300ms (it runs kextstat).
+# The answer only changes if the hardware does, so cache it keyed on the
+# hardware model.
+HOST_CACHE="$POKETERM_PATH/.host_cache"
+HOST_KEY=""
+CACHED_HOST=""
+if [[ "$(uname -s)" == Darwin ]]; then
+    HOST_KEY="$(sysctl -n hw.model 2>/dev/null)"
+    if [[ -n "$HOST_KEY" && -r "$HOST_CACHE" ]]; then
+        IFS=$'\t' read -r cached_key cached_value < "$HOST_CACHE"
+        [[ "$cached_key" == "$HOST_KEY" ]] && CACHED_HOST="$cached_value"
+    fi
+fi
+
+if [[ -n "$FETCH_CMD" ]]; then
+    cat > "$FETCH_CFG_FILE" <<'EOF'
+print_info() {
+    info "OS" distro
+    if [[ -n "$POKETERM_CACHED_HOST" ]]; then
+        prin "Host" "$POKETERM_CACHED_HOST"
+    else
+        info "Host" model
+    fi
+    info "Kernel" kernel
+    info "Uptime" uptime
+    info "Packages" packages
+    info "Shell" shell
+    info "Terminal" term
+}
+EOF
+    POKETERM_CACHED_HOST="$CACHED_HOST" POKETERM_RUNNING=1 \
+        "$FETCH_CMD" --config "$FETCH_CFG_FILE" --off >"$FETCH_OUT_FILE" 2>/dev/null </dev/null &
+    FETCH_PID=$!
+fi
+
+# === PICK A RANDOM POKEMON FROM THE CHOSEN GENERATIONS ===
+# Prefer the Go build of pokemon-colorscripts (~6ms per sprite vs ~80ms for
+# the Python one); both print identical sprites.
+if [[ -x "$HOME/.local/share/pokemon-go-colorscripts/pokemon-go-colorscripts" ]]; then
+    COLORSCRIPTS="$HOME/.local/share/pokemon-go-colorscripts/pokemon-go-colorscripts"
+elif command -v pokemon-go-colorscripts >/dev/null 2>&1; then
+    COLORSCRIPTS=pokemon-go-colorscripts
+elif command -v pokemon-colorscripts >/dev/null 2>&1; then
+    COLORSCRIPTS=pokemon-colorscripts
+else
+    echo "poketerm: pokemon-colorscripts is not installed. Reinstall with: ./install.sh --update"
+    command rm -f -- "$FETCH_OUT_FILE" "$FETCH_CFG_FILE"
+    return 1
+fi
+
+IFS=- read -r gen_start gen_end <<< "$GEN_COLLECTION"
+gen_end=${gen_end:-$gen_start}
+candidates=()
+for (( g = gen_start; g <= gen_end; g++ )); do
+    [[ -r "$GEN_DIR/gen${g}_list.txt" ]] && candidates+=("${(@f)$(<"$GEN_DIR/gen${g}_list.txt")}")
+done
+candidates=(${candidates:#})
+if (( ${#candidates} == 0 )); then
+    echo "poketerm: no Pokemon lists found in $GEN_DIR. Reinstall with: ./install.sh --update"
+    command rm -f -- "$FETCH_OUT_FILE" "$FETCH_CFG_FILE"
+    return 1
+fi
+base_name="${candidates[RANDOM % ${#candidates} + 1]}"
+sprite="$("$COLORSCRIPTS" --no-title -n "$base_name" 2>/dev/null)"
 
 # === SHINY ROLL (1/4096 or 1/10 if THAT generation complete) ===
 
@@ -182,8 +248,7 @@ fi
 
 # === FETCH SHINY IF NEEDED ===
 if [ "$shiny" = true ]; then
-    raw_output=$(pokemon-colorscripts -n "$base_name" -s)
-    sprite=$(echo "$raw_output" | tail -n +2)
+    sprite="$("$COLORSCRIPTS" --no-title -n "$base_name" -s 2>/dev/null)"
 fi
 
 # === FORMAT NAME FOR POKEDEX STORAGE ===
@@ -258,7 +323,8 @@ else
     xp_to_add=10
 fi
 
-PYTHONPATH="$POKETERM_PATH" python3 - "$xp_to_add" <<'PY' >/dev/null 2>&1
+# Runs alongside the display; waited for before poketerm exits.
+PYTHONPATH="$POKETERM_PATH" python3 - "$xp_to_add" <<'PY' >/dev/null 2>&1 &
 from trainer import add_xp, update_streak
 from achievements import check_pokedex_achievements, update_daily_catch
 import sys
@@ -268,6 +334,7 @@ update_streak()
 update_daily_catch()
 check_pokedex_achievements()
 PY
+XP_PID=$!
 
 # === SHOW POKEMON + NEOFETCH INFO ===
 # Sprite (with the Pokemon's name underneath) on the left; on the right the
@@ -278,31 +345,14 @@ PY
 
     local ansi_re=$'\e''\[[0-9;?]#[a-zA-Z]'
     local user_name="${USER:-$(whoami 2>/dev/null || echo unknown)}"
-    local fetch_cmd="" fetch_cfg="" fetch_out="" line plain
+    local fetch_out="" line plain
     local -a sprite_lines info_lines
 
-    if command -v neofetch >/dev/null 2>&1; then
-        fetch_cmd=neofetch
-    elif command -v neowofetch >/dev/null 2>&1; then
-        fetch_cmd=neowofetch
+    if [[ -n "$FETCH_PID" ]]; then
+        wait "$FETCH_PID" 2>/dev/null
+        fetch_out="$(<"$FETCH_OUT_FILE")"
     fi
-
-    if [[ -n "$fetch_cmd" ]]; then
-        fetch_cfg="$(mktemp)"
-        cat > "$fetch_cfg" <<'EOF'
-print_info() {
-    info "OS" distro
-    info "Host" model
-    info "Kernel" kernel
-    info "Uptime" uptime
-    info "Packages" packages
-    info "Shell" shell
-    info "Terminal" term
-}
-EOF
-        fetch_out="$(POKETERM_RUNNING=1 "$fetch_cmd" --config "$fetch_cfg" --off 2>/dev/null)"
-        command rm -f -- "$fetch_cfg"
-    fi
+    command rm -f -- "$FETCH_OUT_FILE" "$FETCH_CFG_FILE"
 
     info_lines=(
         $'\e[38;5;81m'"${user_name}"$'\e[0m'
@@ -315,6 +365,10 @@ EOF
         plain="${line//${~ansi_re}/}"
         [[ -z "${plain//[[:space:]]/}" ]] && continue
         info_lines+=("$line")
+        # Save a freshly looked-up Host for next time (see HOST_CACHE above).
+        if [[ -n "$HOST_KEY" && -z "$CACHED_HOST" && "$plain" == Host:\ * ]]; then
+            print -r -- "${HOST_KEY}"$'\t'"${${plain#Host: }%%[[:space:]]#}" > "$HOST_CACHE" 2>/dev/null
+        fi
     done
 
     sprite_lines=("${(@f)sprite}")
@@ -361,3 +415,7 @@ EOF
         ( POKETERM_APP_DIR="$POKETERM_PATH" bash "$POKETERM_PATH/update.sh" --check --quiet </dev/null >/dev/null 2>&1 & )
     fi
 }
+
+# Make sure the XP/achievement update has been saved before exiting.
+[[ -n "${XP_PID:-}" ]] && wait "$XP_PID" 2>/dev/null
+return 0

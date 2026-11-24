@@ -183,7 +183,8 @@ preflight() {
     local missing=()
     command -v zsh >/dev/null 2>&1 || missing+=("zsh")
     command -v python3 >/dev/null 2>&1 || missing+=("python3")
-    command -v git >/dev/null 2>&1 || command -v pokemon-colorscripts >/dev/null 2>&1 || missing+=("git")
+    command -v git >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 \
+        || command -v pokemon-colorscripts >/dev/null 2>&1 || missing+=("curl or git")
     if (( ${#missing[@]} )); then
         printf '%s' "$C_CLEAR"
         echo "${C_RED}Missing required tools:${C_RESET} ${missing[*]}"
@@ -388,7 +389,88 @@ link_commands() {
     ok
 }
 
+# --- pokemon-go-colorscripts (fast Go build of pokemon-colorscripts) --------
+# https://github.com/scottmckendry/pokemon-go-colorscripts (MIT)
+# Pinned to a reviewed release. The SHA256 hashes below were recorded when
+# v0.3.1 was reviewed and match the release's checksums.txt; a download that
+# doesn't match is rejected. To upgrade: review the new release, then update
+# the version AND all four hashes together.
+GO_COLORSCRIPTS_VERSION="0.3.1"
+go_colorscripts_sha256() {
+    case "$1" in
+        darwin_arm64) echo "d1b4d35d33590854aa01f0b2ea5da6bee7b1676fdfe4a4b1e997e433e8635dc0" ;;
+        darwin_amd64) echo "f88871117cfbf967adeeb046793de161bee5588c6bd7eba6d2ceadcbb6d833fe" ;;
+        linux_amd64)  echo "0b8934ed246144c56c23b90be95e6f5db7cfe3ed0b04b62ccfae79829f2fbeb4" ;;
+        linux_arm64)  echo "1d860698a7dd0a4dfd7f7a22a4fb8954f6709cddede45fccacccc0dd3ce72642" ;;
+    esac
+}
+
+go_colorscripts_skip() {
+    # Soft failure: poketerm falls back to the Python pokemon-colorscripts.
+    printf '%s' "$C_CLEAR"
+    warn "Skipped the faster Go sprites ($1) - using the Python version instead."
+    echo "go-colorscripts skipped: $1" >>"$LOG_FILE"
+    CURRENT_STEP=""
+    [[ -n "${go_tmp:-}" && -d "$go_tmp" ]] && rm -rf -- "$go_tmp"
+    return 1
+}
+
+install_go_colorscripts() {
+    # Every step is checked explicitly: this function runs in a `||` context
+    # where `set -e` doesn't apply, and a failure must never abort the install.
+    local os arch platform expected dest actual file
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    case "$(uname -m)" in
+        x86_64|amd64)  arch=amd64 ;;
+        arm64|aarch64) arch=arm64 ;;
+        *) return 1 ;;
+    esac
+    platform="${os}_${arch}"
+    expected="$(go_colorscripts_sha256 "$platform")"
+    [[ -n "$expected" ]] || return 1
+
+    dest="$SHARE_DIR/pokemon-go-colorscripts"
+    if [[ -x "$dest/pokemon-go-colorscripts" && "$(cat "$dest/.version" 2>/dev/null)" == "$GO_COLORSCRIPTS_VERSION" ]]; then
+        ln -sfn "$dest/pokemon-go-colorscripts" "$BIN_DIR/pokemon-go-colorscripts" 2>>"$LOG_FILE" || true
+        return 0
+    fi
+    command -v curl >/dev/null 2>&1 || return 1
+
+    step "Installing faster sprites (pokemon-go-colorscripts $GO_COLORSCRIPTS_VERSION)"
+    go_tmp="$(mktemp -d)" || go_colorscripts_skip "no temp dir" || return 1
+    file="pokemon-go-colorscripts_${GO_COLORSCRIPTS_VERSION}_${platform}.tar.gz"
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 2 --connect-timeout 10 --max-time 300 \
+        -o "$go_tmp/$file" \
+        "https://github.com/scottmckendry/pokemon-go-colorscripts/releases/download/v${GO_COLORSCRIPTS_VERSION}/${file}" \
+        >>"$LOG_FILE" 2>&1 || { go_colorscripts_skip "download failed"; return 1; }
+
+    actual="$(sha256_file "$go_tmp/$file" | cut -d' ' -f1)"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "expected sha256 $expected, got $actual" >>"$LOG_FILE"
+        go_colorscripts_skip "download did not match the pinned checksum"
+        return 1
+    fi
+
+    tar -xzf "$go_tmp/$file" -C "$go_tmp" pokemon-go-colorscripts LICENSE >>"$LOG_FILE" 2>&1 \
+        || { go_colorscripts_skip "could not unpack"; return 1; }
+    "$go_tmp/pokemon-go-colorscripts" --no-title -n pikachu >/dev/null 2>>"$LOG_FILE" \
+        || { go_colorscripts_skip "binary did not run on this system"; return 1; }
+
+    { mkdir -p "$dest" "$BIN_DIR" \
+        && mv -f "$go_tmp/pokemon-go-colorscripts" "$dest/pokemon-go-colorscripts" \
+        && chmod 755 "$dest/pokemon-go-colorscripts"; } >>"$LOG_FILE" 2>&1 \
+        || { go_colorscripts_skip "could not install"; return 1; }
+    cp "$go_tmp/LICENSE" "$dest/LICENSE" 2>/dev/null || true
+    printf '%s\n' "$GO_COLORSCRIPTS_VERSION" > "$dest/.version"
+    ln -sfn "$dest/pokemon-go-colorscripts" "$BIN_DIR/pokemon-go-colorscripts" 2>>"$LOG_FILE" || true
+    rm -rf -- "$go_tmp"
+    ok
+}
+
 install_pokemon_colorscripts() {
+    # Fast path: the Go build. The Python one stays as the fallback.
+    install_go_colorscripts && return 0
+
     command -v pokemon-colorscripts >/dev/null 2>&1 && return 0
     [[ -x "$BIN_DIR/pokemon-colorscripts" ]] && return 0
 
@@ -589,7 +671,8 @@ do_uninstall() {
     fi
     [[ -n "$INSTALL_ROOT" && -d "$APP_DIR" ]] && rm -rf -- "$APP_DIR"
     [[ -n "$INSTALL_ROOT" && -d "$SHARE_DIR/pokemon-colorscripts" ]] && rm -rf -- "$SHARE_DIR/pokemon-colorscripts"
-    rm -f "$BIN_DIR/poketerm" "$BIN_DIR/pokedex" "$BIN_DIR/pokemon-colorscripts"
+    [[ -n "$INSTALL_ROOT" && -d "$SHARE_DIR/pokemon-go-colorscripts" ]] && rm -rf -- "$SHARE_DIR/pokemon-go-colorscripts"
+    rm -f "$BIN_DIR/poketerm" "$BIN_DIR/pokedex" "$BIN_DIR/pokemon-colorscripts" "$BIN_DIR/pokemon-go-colorscripts"
 
     if has_hook; then
         echo ""

@@ -194,6 +194,7 @@ There are 42 achievements in total for you to unlock. Some have been left hidden
 
 - All the pokemon designs, names, branding etc. are trademarks of [The Pokemon Company](https://www.pokemon.com/uk)
 - [Pokemon-Colorscripts](https://gitlab.com/phoneybadger/pokemon-colorscripts) for the sprites
+- [pokemon-go-colorscripts](https://github.com/scottmckendry/pokemon-go-colorscripts) (MIT) - a Go build of the same sprites that poketerm uses when available for faster startup. The installer pins a reviewed release and verifies its SHA256 checksum, falling back to the Python version otherwise.
 - [PokeAPI](https://pokeapi.co/) for the data around the pokemon
 
 ## Contributing
