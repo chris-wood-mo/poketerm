@@ -47,27 +47,39 @@ source ~/.zshrc
 ## Update
 
 ```bash
-cd poketerm
-git pull
-./install.sh --update
-source ~/.zshrc
+poketerm --update
 ```
 
-Updating to specific generations:
+That's it. Your Pokedex and trainer progress are kept (and backed up to `~/.local/share/poketerm/backups` before every update), your `--gen` setting is kept, and the new version is used from the next terminal you open. If an update fails part-way, the previous version is restored automatically.
 
-```bash 
-cd poketerm
-git pull
-./install.sh --update --gen 1
-source ~/.zshrc
+Poketerm checks for a new version once a day in the background and shows a one-line notice when one is available. Set `POKETERM_NO_UPDATE_CHECK=1` to turn this off.
+
+```bash
+poketerm --update --check     # just check whether an update is available
+poketerm --update 0.0.7       # install a specific version (add --force to go back to an older one)
+poketerm --update --beta      # try pre-release versions early
 ```
+
+To change which generations you catch, re-run the installer with `--gen`:
 
 ```bash
 cd poketerm
-git pull
 ./install.sh --update --gen 2-5
-source ~/.zshrc
 ```
+
+> Upgrading from 0.0.6 or earlier? Those versions don't have `poketerm --update` yet, so update once the old way: `cd poketerm && git pull && ./install.sh --update` (no `sudo` needed any more). Your Pokedex, trainer profile, XP and achievements are kept, and your old `~/.zshrc` block is upgraded automatically. After that, `poketerm --update` works.
+
+## Development and releasing
+
+```bash
+./install.sh --dev                # link your install to this checkout: edits apply to the next terminal you open
+poketerm --update --from .        # install this checkout as a normal (copied) build, e.g. to test before release
+./release.sh 0.0.8-beta.1         # publish a pre-release - only `poketerm --update --beta` users get it
+./release.sh 0.0.8                # publish a stable release from main - all users are offered it
+./release.sh 0.0.8 --dry-run      # run every check (syntax, smoke-test install) without publishing
+```
+
+`release.sh` checks the version is newer than the last release, the tree is clean, and a fresh install catches a Pokemon and earns XP, then bumps `VERSION`, tags, pushes and creates the GitHub release (needs the [GitHub CLI](https://cli.github.com/)). The version lives only in the `VERSION` file.
 
 ## Remove
 
@@ -102,6 +114,9 @@ poketerm --help
 
 # Show the current version
 poketerm --version
+
+# Update to the latest version
+poketerm --update
 
 # Remove a manually added Pokemon from the Pokedex
 poketerm --remove pikachu

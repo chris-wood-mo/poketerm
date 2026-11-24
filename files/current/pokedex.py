@@ -37,7 +37,6 @@ def clear():
     # \033[3J: Clear scrollback buffer
     sys.stdout.write("\033[2J\033[H\033[3J")
     sys.stdout.flush()
-clear()
 
 def hide_cursor():
     sys.stdout.write("\033[?25l")
@@ -370,5 +369,6 @@ def main():
         print(RESET)
 
 if __name__ == "__main__":
+    clear()
     trainer.load_trainer_profile()
     main()

@@ -9,7 +9,6 @@ GEN_DIR="$HOME/.local/share/poketerm/gen_files"
 VERSION_DIRECTORY="$HOME/.local/share/poketerm/VERSION"
 GEN_COLLECTION_DEFAULT="1-8"
 GEN_COLLECTION="$GEN_COLLECTION_DEFAULT"
-POKETERM_VERSION="${POKETERM_VERSION:-0.0.7}"
 
 # === MAKE POKEDEX FILE IF IT DOESNT EXIST ===
 mkdir -p "$(dirname "$POKEDEX_FILE")"
@@ -26,11 +25,15 @@ Usage:
 Options:
   -h, --help           Show this help message
   -v, --version        Show poketerm version
+  -u, --update         Update to the latest version (see: poketerm --update --help)
   -g, --gen N|N-M      Use a specific generation or range (1–8)
   -r, --remove NAME    Remove a Pokemon from the Pokedex
   -f, --fix-pokedex    Repair Pokedex after removal
 
+Set POKETERM_NO_UPDATE_CHECK=1 to turn off the daily update check.
+
 Examples:
+  poketerm --update
   poketerm --version
   poketerm --gen 1
   poketerm --gen 2-5
@@ -46,11 +49,20 @@ case "$1" in
         ;;
     -v|--version)
         if [[ -f "$VERSION_DIRECTORY" ]]; then
-            echo "Version: $(cat "$VERSION_DIRECTORY")"
+            echo "Version: $(<"$VERSION_DIRECTORY")"
         else
-            echo "Version: $POKETERM_VERSION"
+            echo "Version: unknown (reinstall with ./install.sh)"
         fi
         return 0
+        ;;
+    -u|--update|--upgrade)
+        shift
+        if [[ ! -f "$POKETERM_PATH/update.sh" ]]; then
+            echo "The updater is missing. Reinstall once with: git pull && ./install.sh --update"
+            return 1
+        fi
+        POKETERM_APP_DIR="$POKETERM_PATH" bash "$POKETERM_PATH/update.sh" "$@"
+        return $?
         ;;
     -g|--gen)
         gen="$2"
@@ -153,6 +165,7 @@ if [[ -n "$pokemon_gen" ]]; then
         {
             n=$0
             sub(/[ \t]+[0-9]+$/, "", n)
+            sub(/ \(shiny\)$/, "", n)
             if (n in gen) seen[n]=1
         }
         END { print length(seen) }
@@ -176,32 +189,11 @@ fi
 # === FORMAT NAME FOR POKEDEX STORAGE ===
 if [ "$shiny" = true ]; then
     stored_name="${base_name} (shiny)"
-    display_name="\033[33m${base_name} (shiny)\033[0m"
+    display_name=$'\033[33m'"${base_name} (shiny)"$'\033[0m'
 else
     stored_name="$base_name"
     display_name="$base_name"
 fi
-
-# === AWARD XP ===
-# Normal: 10 XP | Shiny: 150 XP
-if [ "$shiny" = true ]; then
-    xp_to_add=150
-else
-    xp_to_add=10
-fi
-
-PYTHONPATH="$POKETERM_PATH" python3 - "$xp_to_add" <<'PY' 2>/dev/null
-from trainer import add_xp, update_streak
-from achievements import check_pokedex_achievements, update_daily_catch
-import sys
-
-add_xp(int(sys.argv[1]))
-update_streak()
-update_daily_catch()
-check_pokedex_achievements()
-PY
-
-image_source="$(echo -e "$sprite\n$display_name")"
 
 chmod 644 "$POKEDEX_FILE"
 
@@ -257,13 +249,48 @@ else
     shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
 fi
 
-# === SHOW IMAGE IN NEOFETCH ===
+# === AWARD XP + CHECK ACHIEVEMENTS ===
+# Runs after the pokedex is updated so achievements count this catch.
+# Normal: 10 XP | Shiny: 150 XP
+if [ "$shiny" = true ]; then
+    xp_to_add=150
+else
+    xp_to_add=10
+fi
 
-NEOFETCH_CFG_TMP="$(mktemp)"
-cat > "$NEOFETCH_CFG_TMP" <<'EOF'
+PYTHONPATH="$POKETERM_PATH" python3 - "$xp_to_add" <<'PY' >/dev/null 2>&1
+from trainer import add_xp, update_streak
+from achievements import check_pokedex_achievements, update_daily_catch
+import sys
+
+add_xp(int(sys.argv[1]))
+update_streak()
+update_daily_catch()
+check_pokedex_achievements()
+PY
+
+# === SHOW POKEMON + NEOFETCH INFO ===
+# Sprite (with the Pokemon's name underneath) on the left; on the right the
+# username, an underline the same length as the username, then system details.
+
+() {
+    setopt localoptions extendedglob
+
+    local ansi_re=$'\e''\[[0-9;?]#[a-zA-Z]'
+    local user_name="${USER:-$(whoami 2>/dev/null || echo unknown)}"
+    local fetch_cmd="" fetch_cfg="" fetch_out="" line plain
+    local -a sprite_lines info_lines
+
+    if command -v neofetch >/dev/null 2>&1; then
+        fetch_cmd=neofetch
+    elif command -v neowofetch >/dev/null 2>&1; then
+        fetch_cmd=neowofetch
+    fi
+
+    if [[ -n "$fetch_cmd" ]]; then
+        fetch_cfg="$(mktemp)"
+        cat > "$fetch_cfg" <<'EOF'
 print_info() {
-    prin "\033[38;5;81m${USER}\033[0m"
-    info underline
     info "OS" distro
     info "Host" model
     info "Kernel" kernel
@@ -273,12 +300,64 @@ print_info() {
     info "Terminal" term
 }
 EOF
-if command -v neowofetch >/dev/null 2>&1; then
-    POKETERM_RUNNING=1 neowofetch --config "$NEOFETCH_CFG_TMP" --source "$image_source" || true
-elif command -v neofetch >/dev/null 2>&1; then
-    POKETERM_RUNNING=1 neofetch --config "$NEOFETCH_CFG_TMP" --source "$image_source" || true
-else
-    printf '%s\n' "$sprite"
-fi
+        fetch_out="$(POKETERM_RUNNING=1 "$fetch_cmd" --config "$fetch_cfg" --off 2>/dev/null)"
+        command rm -f -- "$fetch_cfg"
+    fi
 
-rm -f "$NEOFETCH_CFG_TMP"
+    info_lines=(
+        $'\e[38;5;81m'"${user_name}"$'\e[0m'
+        "${(l:${#user_name}::-:)}"
+    )
+    for line in "${(@f)fetch_out}"; do
+        # Drop neofetch's cursor / line-wrap toggles and its leading padding.
+        line="${line//$'\e'\[\?[0-9]#[hl]/}"
+        line="${line##[[:space:]]#}"
+        plain="${line//${~ansi_re}/}"
+        [[ -z "${plain//[[:space:]]/}" ]] && continue
+        info_lines+=("$line")
+    done
+
+    sprite_lines=("${(@f)sprite}")
+    while (( ${#sprite_lines} )) && [[ -z "${${sprite_lines[-1]//${~ansi_re}/}//[[:space:]]/}" ]]; do
+        sprite_lines[-1]=()
+    done
+    sprite_lines+=("" "$display_name")
+
+    # Measure ANSI-stripped width in characters so the multibyte block glyphs
+    # in the sprite don't inflate the gap.
+    local -i sprite_width=0 pad i rows gap=3
+    for line in "${sprite_lines[@]}"; do
+        plain="${line//${~ansi_re}/}"
+        (( ${#plain} > sprite_width )) && sprite_width=${#plain}
+    done
+
+    rows=$(( ${#sprite_lines} > ${#info_lines} ? ${#sprite_lines} : ${#info_lines} ))
+    for (( i = 1; i <= rows; i++ )); do
+        line="${sprite_lines[i]:-}"
+        plain="${line//${~ansi_re}/}"
+        pad=$(( sprite_width - ${#plain} + gap ))
+        printf '%s\e[0m%*s%s\e[0m\n' "$line" "$pad" "" "${info_lines[i]:-}"
+    done
+}
+
+# === UPDATE NOTICE ===
+# Reads a cached result so startup never waits on the network; the cache is
+# refreshed in the background at most once a day.
+() {
+    [[ -n "${POKETERM_NO_UPDATE_CHECK:-}" || ! -f "$POKETERM_PATH/update.sh" ]] && return 0
+
+    local check_file="$POKETERM_PATH/.update_check"
+    local checked_at=0 latest="" newer=0
+    [[ -r "$check_file" ]] && read -r checked_at latest newer < "$check_file"
+    [[ "$checked_at" == <-> ]] || checked_at=0
+
+    if [[ "$newer" == 1 && -n "$latest" ]]; then
+        print -P "%F{yellow}✦ Poketerm $latest is available (you have $(<"$VERSION_DIRECTORY" 2>/dev/null)). Run: poketerm --update%f"
+    fi
+
+    if (( $(date +%s) - checked_at > 86400 )); then
+        # Mark the check as started so parallel terminals don't all hit GitHub.
+        print -r -- "$(date +%s) $latest $newer" > "$check_file" 2>/dev/null
+        ( POKETERM_APP_DIR="$POKETERM_PATH" bash "$POKETERM_PATH/update.sh" --check --quiet </dev/null >/dev/null 2>&1 & )
+    fi
+}

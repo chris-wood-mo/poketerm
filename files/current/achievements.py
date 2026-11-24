@@ -221,6 +221,30 @@ def load_trainer():
         return {"hall_of_fame": []}
 
 
+def _write_trainer_unlocked(data):
+    tmp_path = TRAINER_FILE.with_suffix(".tmp")
+    with tmp_path.open("w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp_path, TRAINER_FILE)
+
+
+def update_trainer(update_fn):
+    """Read, modify and write trainer.json while holding the lock for the whole
+    cycle, so concurrent terminals cannot overwrite each other's XP/progress."""
+    TRAINER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = TRAINER_FILE.with_suffix(".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            trainer = load_trainer()
+            result = update_fn(trainer)
+            _write_trainer_unlocked(result if isinstance(result, dict) else trainer)
+            return trainer
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def save_trainer(data):
     if not isinstance(data, dict):
         data = {"hall_of_fame": []}
@@ -230,11 +254,7 @@ def save_trainer(data):
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            tmp_path = TRAINER_FILE.with_suffix(".tmp")
-            with tmp_path.open("w", encoding="utf-8") as fh:
-                json.dump(data, fh, indent=2)
-                fh.write("\n")
-            os.replace(tmp_path, TRAINER_FILE)
+            _write_trainer_unlocked(data)
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
@@ -291,29 +311,35 @@ def analyze_pokedex():
 
 
 def update_daily_catch():
-    trainer = load_trainer()
-    today_str = str(date.today())
-    daily = trainer.get("daily_catch", {"date": today_str, "count": 0})
+    def update(trainer):
+        today_str = str(date.today())
+        daily = trainer.get("daily_catch")
+        if not isinstance(daily, dict):
+            daily = {}
 
-    if daily.get("date") != today_str:
-        daily = {"date": today_str, "count": 1}
-    else:
-        daily["count"] += 1
+        if daily.get("date") != today_str:
+            daily = {"date": today_str, "count": 1}
+        else:
+            daily["count"] = int(daily.get("count", 0)) + 1
 
-    trainer["daily_catch"] = daily
-    
-    save_trainer(trainer)
+        trainer["daily_catch"] = daily
+        return trainer
+
+    update_trainer(update)
 
 # -----------------------------
 # Main Checker
 # -----------------------------
 
 def check_pokedex_achievements():
-    trainer = load_trainer()
+    update_trainer(_apply_pokedex_achievements)
+
+
+def _apply_pokedex_achievements(trainer):
     unique_species, total_shinies, highest_catch, total_pokemon_caught = analyze_pokedex()
     total_unique = len(unique_species)
-    lvl = trainer.get('level')
-    total_xp = trainer.get('total_xp')
+    lvl = trainer.get('level') or 0
+    total_xp = trainer.get('total_xp') or 0
     streak_data = trainer.get("streak", {})
     longest = streak_data.get("longest", 0)
     daily_catch = trainer.get("daily_catch", {})
@@ -510,8 +536,8 @@ def check_pokedex_achievements():
     # -----------------
     if all_achievements:
         unlock(trainer, "Poketerm - Completed it mate!", "Completed all achievements", "special")
-    
-    save_trainer(trainer)
+
+    return trainer
 
 def get_visible_len(text):
     ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-v])')

@@ -252,7 +252,9 @@ def update_streak():
             trainer['daily_catch']['date'] = today_str
 
         if last_date == today:
-            pass
+            # First ever catch (or a profile created today) must still count as day 1.
+            if trainer['streak']['current'] < 1:
+                trainer['streak']['current'] = 1
         elif last_date == today - timedelta(days=1):
             trainer['streak']['current'] += 1
         else:
@@ -363,40 +365,26 @@ def create_trainer_profile(editing=False):
         all_pokemon_list=all_pokemon_list
     )
 
-    trainer = load_trainer_profile(True)
+    # Merge the profile fields into the *current* file under the lock, so XP,
+    # streaks and achievements earned by other terminals while this
+    # prompt was open are never overwritten.
+    def update(trainer):
+        trainer["name"] = name
+        trainer["region"] = region
+        trainer["hometown"] = hometown
+        trainer["favourites"] = favourites
+        if not editing:
+            trainer["created"] = date.today().isoformat()
+        return trainer
 
-    trainer = {
-        "name": name,
-        "region": region,
-        "hometown": hometown,
-        "created": trainer['created'] if editing else date.today().isoformat(),
-        "favourites": favourites,
-        "level": trainer['level'],
-        "xp": trainer['xp'],
-        "total_xp": trainer['total_xp'],
-        "streak": {
-            "current": trainer['streak']['current'],
-            "longest": trainer['streak']['longest'],
-            "last_active_date": trainer['streak']['last_active_date'] if editing else date.today().isoformat()
-        },
-        "daily_catch": {
-            "date": trainer['daily_catch']['date'] if editing else date.today().isoformat(),
-            "count": trainer['daily_catch']['count']
-        },
-        "hall_of_fame": trainer['hall_of_fame']
-    }
-
-    TRAINER_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TRAINER_FILE.write_text(json.dumps(trainer, indent=2))
-
-    return trainer
+    return _locked_trainer_update(update)
 
 # -----------------------
 # Load Trainer
 # -----------------------
 def load_trainer_profile(create_profile=False, update_stats=False):
     try:
-        trainer = json.loads(TRAINER_FILE.read_text())
+        trainer = _normalize_trainer(json.loads(TRAINER_FILE.read_text()))
         if trainer['name'] != "None":
             return trainer
         elif create_profile and trainer['name'] == "None":
