@@ -433,10 +433,14 @@ remove_zshrc_hook() {
     [[ -f "$ZSHRC" ]] || return 0
     local filtered
     filtered="$(mktemp)"
+    # Also drops the blank line(s) the installer put around the block, so
+    # moving the block doesn't leave gaps behind.
     awk -v begin="$ZSHRC_MARKER_BEGIN" -v end="$ZSHRC_MARKER_END" '
-        $0 == begin { skip = 1; next }
-        skip && $0 == end { skip = 0; next }
-        !skip { print }
+        $0 == begin { skip = 1; blanks = 0; next }
+        skip && $0 == end { skip = 0; after = 1; next }
+        skip { next }
+        /^[[:space:]]*$/ { if (!(after && !printed)) blanks++; next }
+        { while (blanks > 0) { print ""; blanks-- } print; printed = 1; after = 0 }
     ' "$ZSHRC" > "$filtered"
     cat "$filtered" > "$ZSHRC"   # keep the file's owner/permissions/symlink
     rm -f "$filtered"
@@ -450,17 +454,35 @@ hook_block() {
     ' "$ZSHRC"
 }
 
+# Line where the hook has to go so it runs before Powerlevel10k's instant
+# prompt (the comment lines directly above its `if` included), or nothing if
+# the zshrc doesn't use instant prompt. p10k warns about any console output
+# printed after that block, so poketerm's output must come before it.
+p10k_insert_line() {
+    [[ -f "$ZSHRC" ]] || return 0
+    awk '
+        /^[[:space:]]*#/ { if (!c) c = NR; next }
+        /p10k-instant-prompt/ { print (c ? c : NR); exit }
+        { c = 0 }
+    ' "$ZSHRC"
+}
+
+hook_line() {
+    grep -nxF "$ZSHRC_MARKER_BEGIN" "$ZSHRC" 2>/dev/null | head -n 1 | cut -d: -f1
+}
+
 ensure_zshrc_hook() {
     # On update, keep the user's existing hook (and their --gen choice) unless
-    # a new --gen was given explicitly.
+    # a new --gen was given, it's from an old version, or it sits below
+    # Powerlevel10k's instant prompt.
     if has_hook && [[ -z "$GEN" ]]; then
-        local block
+        local block p10k_at
         block="$(hook_block)"
-        if grep -q '^export PATH=' <<< "$block"; then
+        p10k_at="$(p10k_insert_line)"
+        if grep -q '^export PATH=' <<< "$block" \
+           && { [[ -z "$p10k_at" ]] || (( $(hook_line) < p10k_at )); }; then
             return 0
         fi
-        # Hook from 0.0.6 or earlier (relied on /usr/local/bin and aliased
-        # neofetch): upgrade it to the current format, keeping their --gen.
         GEN="$(sed -nE 's/.*poketerm --gen ([0-9]+(-[0-9]+)?).*/\1/p' <<< "$block" | head -n 1)"
     fi
 
@@ -473,8 +495,11 @@ ensure_zshrc_hook() {
     fi
     cp -p "$ZSHRC" "$APP_DIR/zshrc.backup" 2>/dev/null || true
     remove_zshrc_hook
+
+    local hook_file
+    hook_file="$(mktemp)"
     {
-        printf '\n%s\n' "$ZSHRC_MARKER_BEGIN"
+        printf '%s\n' "$ZSHRC_MARKER_BEGIN"
         printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
         printf 'if command -v poketerm >/dev/null 2>&1; then\n'
         if [[ -n "$GEN" ]]; then
@@ -484,7 +509,23 @@ ensure_zshrc_hook() {
         fi
         printf 'fi\n'
         printf '%s\n' "$ZSHRC_MARKER_END"
-    } >> "$ZSHRC"
+    } > "$hook_file"
+
+    local insert_at
+    insert_at="$(p10k_insert_line)"
+    if [[ -n "$insert_at" ]]; then
+        local merged
+        merged="$(mktemp)"
+        awk -v n="$insert_at" -v f="$hook_file" '
+            NR == n { while ((getline l < f) > 0) print l; print "" }
+            { print }
+        ' "$ZSHRC" > "$merged"
+        cat "$merged" > "$ZSHRC"
+        rm -f "$merged"
+    else
+        { printf '\n'; cat "$hook_file"; } >> "$ZSHRC"
+    fi
+    rm -f "$hook_file"
     ok
 }
 

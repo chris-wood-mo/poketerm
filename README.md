@@ -69,6 +69,12 @@ cd poketerm
 
 > Upgrading from 0.0.6 or earlier? Those versions don't have `poketerm --update` yet, so update once the old way: `cd poketerm && git pull && ./install.sh --update` (no `sudo` needed any more). Your Pokedex, trainer profile, XP and achievements are kept, and your old `~/.zshrc` block is upgraded automatically. After that, `poketerm --update` works.
 
+## Troubleshooting
+
+**Powerlevel10k shows "Console output during zsh initialization detected"**
+
+Poketerm prints to the terminal when it starts, so with Powerlevel10k's instant prompt its block in `~/.zshrc` must come *before* the instant-prompt block. The installer puts it there automatically - just update (`poketerm --update`, or `./install.sh --update` on 0.0.6 and earlier). To fix it by hand, move everything between `# >>> POKETERM SCRIPT BEGIN >>>` and `# <<< POKETERM SCRIPT END <<<` above the line `# Enable Powerlevel10k instant prompt`.
+
 ## Development and releasing
 
 ```bash
