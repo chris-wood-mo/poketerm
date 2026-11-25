@@ -163,7 +163,7 @@ def draw(gen, page, cursor, pkm_list, pokedex):
         print(f"│ {' '*(BOX_WIDTH-2)} │")
 
     print("│ ----------------------------------- │")
-    footer = f"Page {page}/{pages} (↑↓ ←→ Enter p a q)"
+    footer = f"Page {page}/{pages} (↑↓ ←→ Enter p a t q)"
     print(f"│ {footer:<{BOX_WIDTH-2}} │")
     print(f"{RED}└{'─'*BOX_WIDTH}┘{RESET}")
     sys.stdout.write("\033[J")
@@ -311,6 +311,7 @@ def print_help():
     {GREEN}Enter{RESET}         View detailed stats and sprites (if caught).
     {GREEN}p{RESET}             View trainer profile and overall progression.
     {GREEN}a{RESET}             View achievements.
+    {GREEN}t{RESET}             Trade Pokemon with a trainer on your local network.
     {GREEN}q{RESET}             Exit the Pokedex.
         """)
 
@@ -347,6 +348,12 @@ def main():
             elif key == "a": 
                 achievements.display_hall_of_fame()
                 clear()
+            elif key == "t":
+                import trade_ui
+                clear()
+                trade_ui.open_trade_page()
+                pokedex = load_pokedex()      # trades change what you own
+                clear()
             elif key == readchar.key.UP:
                 cursor = max(0, cursor - 1)
                 if cursor < (page - 1) * PAGE_SIZE: page -= 1
@@ -378,6 +385,9 @@ def main():
         print(RESET)
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("-h", "--help", "help"):
+        print_help()          # no trainer profile needed just to read the help
+        sys.exit(0)
     clear()
     trainer.load_trainer_profile()
     main()

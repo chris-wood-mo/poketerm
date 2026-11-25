@@ -12,13 +12,20 @@ This repository provides a simple service to "catch" Pokemon created from pokemo
 - Persist caught Pokemon to a user pokédex file.
 - Keep per-generation ordering using the generation lists in gen_files/.
 - View a generation-specific catch progress report.
+- Trade Pokemon with other trainers on your local network (press `t` in the Pokedex).
 
 ## Requirements
 
-- macOS or Linux
+- macOS (Apple Silicon or Intel) or Linux (x86-64 or ARM)
 - zsh
-- python3
+- curl (to download poketerm's own Python on install)
 - Optional: [fastfetch](https://github.com/fastfetch-cli/fastfetch)
+
+### poketerm's own Python
+
+poketerm brings its own Python so it behaves the same on every machine, whatever version (if any) your system has. The installer downloads it once: Python 3.14 from [python-build-standalone](https://github.com/astral-sh/python-build-standalone), about 27-37 MB, into `~/.local/share/poketerm-python`. Trading's encryption package ([cryptography](https://cryptography.io)) comes with it. Every download is checked against a SHA256 hash pinned in `install.sh`, and anything that doesn't match is rejected. Updates only download it again when poketerm moves to a newer Python.
+
+On a machine it isn't built for (e.g. 32-bit, or Alpine Linux), or if the download fails, poketerm uses your system's `python3` instead. Trading then also needs Python 3 with TLS 1.3 and the `openssl` command.
 
 ## Installation
 
@@ -131,6 +138,25 @@ poketerm --remove pikachu
 ```
 
 When the shell starts, Poketerm will auto-run and keep catching Pokemon in your terminal.
+
+## Trading
+
+Swap Pokemon with a friend on the same network.
+
+1. You both open the Pokedex and press `t`.
+2. Pick the Pokemon you want to give and press `Enter`, then pick your friend from **Trainers nearby** and press `Enter`.
+3. Your friend sees your invite. **Check the 6-digit pairing code is the same on both screens**, then they press `y`.
+4. Your friend picks the Pokemon they'll give you. When you're both happy, you each press `y` to confirm.
+5. Your Pokemon is sent off in its Poke Ball, and the one you receive pops out of a Poke Ball.
+
+Good to know:
+
+- You can make **5 trades a day**. The trade page shows how many you have left.
+- You give one of the Pokemon you've caught. If it was your last one, it leaves your Pokedex. Shiny Pokemon stay shiny.
+- Only trainers with their trade page open can be seen or contacted. Close it and you're invisible.
+- If your friend isn't listed, press `c` and type the address shown on their trade page.
+- **On a Mac, the first time you trade, macOS may ask whether Python may accept incoming connections.** Choose **Allow**, or nobody can invite you.
+- If the connection drops at the very last moment, nothing is lost. The trade finishes automatically the next time you're both on the trade page.
 
 ## Achievements
 

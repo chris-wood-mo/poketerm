@@ -2,6 +2,9 @@
 [[ -n "${POKETERM_RUNNING:-}" ]] && return 0
 export POKETERM_RUNNING=1
 POKETERM_PATH="$HOME/.local/share/poketerm"
+# poketerm's own Python (see install.sh), or the system one where it isn't installed.
+POKETERM_PYTHON="$HOME/.local/share/poketerm-python/bin/python3"
+[[ -x "$POKETERM_PYTHON" ]] || POKETERM_PYTHON=python3
 POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
 POKEDEX_HASH="$POKEDEX_FILE.sha256"
 SORTED_FILE="$HOME/.local/share/poketerm/pokedex_sorted.txt"
@@ -209,7 +212,7 @@ fi
 if [[ "$FETCH_CMD" == fastfetch ]]; then
     # --config none: the user's own fastfetch config must not change this.
     { fastfetch --config none --format json -s OS:Host:Kernel:Uptime:Packages:Shell:Terminal 2>/dev/null </dev/null \
-        | python3 "$POKETERM_PATH/sysinfo.py" >"$FETCH_OUT_FILE" 2>/dev/null; } &
+        | "$POKETERM_PYTHON" -s "$POKETERM_PATH/sysinfo.py" >"$FETCH_OUT_FILE" 2>/dev/null; } &
     FETCH_PID=$!
 elif [[ -n "$FETCH_CMD" ]]; then
     cat > "$FETCH_CFG_FILE" <<'EOF'
@@ -320,6 +323,11 @@ stop_background_fetch() {
     [[ -n "$FETCH_PID" ]] && kill "$FETCH_PID" 2>/dev/null
     command rm -f -- "$FETCH_OUT_FILE" "$FETCH_CFG_FILE"
 }
+# A trade that was interrupted mid-write (crash, power cut) is finished first,
+# so the Pokedex and its checksum agree. Only runs when that happened.
+if [[ -e "$HOME/.local/share/poketerm/trade/inflight.json" || -e "$HOME/.local/share/poketerm/trade/pokedex.staged" ]]; then
+    PYTHONPATH="$POKETERM_PATH" "$POKETERM_PYTHON" -s "$POKETERM_PATH/trade_store.py" --recover >/dev/null 2>&1
+fi
 if ! pokedex_lock; then
     stop_background_fetch
     return 1
@@ -392,7 +400,7 @@ else
 fi
 
 # Runs alongside the display; waited for before poketerm exits.
-PYTHONPATH="$POKETERM_PATH" python3 - "$xp_to_add" <<'PY' >/dev/null 2>&1 &
+PYTHONPATH="$POKETERM_PATH" "$POKETERM_PYTHON" -s - "$xp_to_add" <<'PY' >/dev/null 2>&1 &
 from trainer import add_xp, update_streak
 from achievements import check_pokedex_achievements, update_daily_catch
 import sys

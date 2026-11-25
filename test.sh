@@ -17,7 +17,11 @@ trap cleanup EXIT
 
 T_HOME="$SANDBOX/home"
 APP="$T_HOME/.local/share/poketerm"
+RUNTIME="$T_HOME/.local/share/poketerm-python"
 mkdir -p "$T_HOME"
+# Every sandbox install reuses one download of poketerm's Python. The installer
+# checks a cached copy against the pinned hash exactly like a fresh download.
+export POKETERM_DOWNLOAD_CACHE="${POKETERM_DOWNLOAD_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/poketerm-test-downloads}"
 
 PASS=0
 FAIL=0
@@ -59,7 +63,16 @@ installer() {
 }
 
 total_catches() { awk '{ s += $NF } END { print s + 0 }' "$APP/pokedex.txt"; }
-trainer_field() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(eval('d' + sys.argv[2]))" "$APP/trainer.json" "$1"; }
+trainer_field() {  # retried, and any error shown, so a flaky helper can't pass as a poketerm bug
+    local out i
+    for i in 1 2 3; do
+        out="$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(eval('d' + sys.argv[2]))" "$APP/trainer.json" "$1" 2>&1)" \
+            && { echo "$out"; return 0; }
+        echo "trainer_field attempt $i failed: $out" >&2
+        sleep 0.2
+    done
+    return 1
+}
 hash_ok()       { (cd / && shasum -a 256 -c "$APP/pokedex.txt.sha256" >/dev/null 2>&1); }
 # The Pokemon caught by the last run (the pokedex line that is new or changed).
 caught_name()   { grep -vxF -f <(printf '%s\n' "$1") "$APP/pokedex.txt" | sed -E 's/ [0-9]+$//; s/ \(shiny\)$//' | head -n 1; }
@@ -260,6 +273,24 @@ done
 rm -f "$stub"
 
 # -----------------------------------------------------------------------------
+section "Trading"
+# Real trades between two sandboxed trainers (separate processes and homes),
+# including crashes at every step and the trade screens themselves.
+trade_results() {
+    while IFS= read -r line; do
+        case "$line" in
+            "PASS "*) pass "${line#PASS }" ;;
+            "FAIL "*) desc="${line#FAIL }"; fail "${desc%% :: *}" "$([[ "$desc" == *" :: "* ]] && echo "${desc#* :: }" | cut -c1-400)" ;;
+            "SKIP "*) echo "  - skipped: ${line#SKIP }" ;;
+        esac
+    done
+}
+# (process substitution, not a pipe, so pass/fail counts reach the summary)
+unit_python="$RUNTIME/bin/python3"; [[ -x "$unit_python" ]] || unit_python=python3
+trade_results < <("$unit_python" -s "$REPO_ROOT/test_trade.py" unit 2>&1)
+trade_results < <(python3 "$REPO_ROOT/test_trade.py" "$SANDBOX/trading" 2>&1)
+
+# -----------------------------------------------------------------------------
 section "Generations"
 chmod 644 "$APP/pokedex.txt"; : > "$APP/pokedex.txt"; chmod 444 "$APP/pokedex.txt"
 shasum -a 256 "$APP/pokedex.txt" > "$APP/pokedex.txt.sha256"
@@ -279,6 +310,36 @@ check "zshrc unchanged by update"      same_file "$T_HOME/.zshrc" "$SANDBOX/zshr
 check "progress backed up before update" test -f "$(ls -d "$APP"/backups/*/ | tail -n 1)trainer.json"
 poketerm_run
 eq    "first terminal after update works" "$?" "0"
+
+# -----------------------------------------------------------------------------
+section "poketerm's own Python"
+pinned="$(sed -n 's/^PYTHON_RUNTIME_VERSION="\(.*\)"/\1/p' "$REPO_ROOT/install.sh")"
+if [[ -x "$RUNTIME/bin/python3" ]]; then
+    eq    "pinned Python installed"               "$("$RUNTIME/bin/python3" -c 'import sys; print(sys.version.split()[0])')" "$pinned"
+    check "it has TLS 1.3 (needed for trading)"   "$RUNTIME/bin/python3" -c 'import ssl, sys; sys.exit(0 if ssl.HAS_TLSv1_3 else 1)'
+    check "pokedex command runs on it"            grep -q 'poketerm-python/bin/python3' "$T_HOME/.local/bin/pokedex"
+    check "pokedex command works"                 env -i HOME="$T_HOME" PATH="/usr/bin:/bin" bash -c '"$1" --help >/dev/null' _ "$T_HOME/.local/bin/pokedex"
+    poketerm_run
+    eq    "poketerm works with no python3 on PATH" "$?" "0"
+    installer --update
+    check "updating doesn't download it again"    bash -c '! grep -q "one-time download" "$1"' _ "$SANDBOX/install.log"
+    # A bad download (here: a corrupted cached copy) is never used.
+    bad_cache="$SANDBOX/bad-cache"; mkdir -p "$bad_cache"
+    for f in "$POKETERM_DOWNLOAD_CACHE"/cpython-*; do [[ -f "$f" ]] && printf 'not python' > "$bad_cache/$(basename "$f")"; done
+    (export POKETERM_DOWNLOAD_CACHE="$bad_cache"; export HOME="$SANDBOX/home2"; mkdir -p "$HOME"
+     HOME="$HOME" POKETERM_REAL_HOME="$HOME" POKETERM_ZSHRC="$HOME/.zshrc" bash "$REPO_ROOT/install.sh" > "$SANDBOX/install2.log" 2>&1)
+    check "a corrupted download is rejected (a verified one is fetched instead)" \
+        "$SANDBOX/home2/.local/share/poketerm-python/bin/python3" -c 'pass'
+    chmod -R u+w "$SANDBOX/home2" 2>/dev/null; rm -rf -- "$SANDBOX/home2" "$bad_cache"
+    # Without it (unsupported machine, failed download) the system python3 is used.
+    mv "$RUNTIME" "$RUNTIME.away"
+    poketerm_run
+    eq    "without it, poketerm falls back to the system python3" "$?" "0"
+    check "...and so does the pokedex command"    env -i HOME="$T_HOME" PATH="$PATH" bash -c '"$1" --help >/dev/null' _ "$T_HOME/.local/bin/pokedex"
+    mv "$RUNTIME.away" "$RUNTIME"
+else
+    echo "  - skipped: poketerm's Python isn't available for $(uname -sm) (using the system python3)"
+fi
 
 # -----------------------------------------------------------------------------
 echo ""

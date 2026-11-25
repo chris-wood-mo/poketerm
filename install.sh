@@ -182,7 +182,11 @@ preflight() {
     step "Checking requirements"
     local missing=()
     command -v zsh >/dev/null 2>&1 || missing+=("zsh")
-    command -v python3 >/dev/null 2>&1 || missing+=("python3")
+    # python3 is only needed where poketerm can't bring its own (see install_python_runtime).
+    if ! command -v python3 >/dev/null 2>&1; then
+        { [[ -n "$(python_runtime_target)" ]] && command -v curl >/dev/null 2>&1; } \
+            || [[ -x "$PYTHON_RUNTIME_DIR/bin/python3" ]] || missing+=("python3")
+    fi
     command -v git >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 \
         || command -v pokemon-colorscripts >/dev/null 2>&1 || missing+=("curl or git")
     if (( ${#missing[@]} )); then
@@ -220,6 +224,7 @@ preflight() {
         fi
         warn "fastfetch not found - system details will be hidden until it is installed ($how)"
     fi
+
 }
 
 has_existing_install() {
@@ -247,6 +252,11 @@ backup_progress() {
     for f in pokedex.txt pokedex.txt.sha256 trainer.json; do
         [[ -f "$APP_DIR/$f" ]] && run cp -p "$APP_DIR/$f" "$dest/$f"
     done
+    # Trading identity, history and trainers met. -p keeps the private key 0600.
+    if [[ -d "$APP_DIR/trade" ]]; then
+        run cp -Rp "$APP_DIR/trade" "$dest/trade"
+        run chmod 700 "$dest"
+    fi
     LAST_BACKUP="$dest"
 
     # Keep only the most recent backups.
@@ -311,7 +321,7 @@ install_code() {
         fi
     done
     [[ ${#code_files[@]} -gt 0 ]] || { echo "No code files found in $src" >>"$LOG_FILE"; false; }
-    [[ "$DEV" == true ]] || run chmod +x "$STAGE_DIR/new/poketerm" "$STAGE_DIR/new/pokedex.py" "$STAGE_DIR/new/update.sh"
+    [[ "$DEV" == true ]] || run chmod +x "$STAGE_DIR/new/poketerm" "$STAGE_DIR/new/pokedex" "$STAGE_DIR/new/pokedex.py" "$STAGE_DIR/new/update.sh"
     ok
 
     step "Installing poketerm $VERSION"
@@ -394,8 +404,147 @@ link_commands() {
     step "Linking the poketerm and pokedex commands"
     run mkdir -p "$BIN_DIR"
     run ln -sfn "$APP_DIR/poketerm" "$BIN_DIR/poketerm"
-    run ln -sfn "$APP_DIR/pokedex.py" "$BIN_DIR/pokedex"
+    run ln -sfn "$APP_DIR/pokedex" "$BIN_DIR/pokedex"
     ok
+}
+
+# --- Python runtime ---------------------------------------------------------
+# poketerm runs on its own pinned Python, so it behaves the same on every
+# machine whatever Python (if any) the system has - e.g. trading needs TLS 1.3,
+# which macOS's built-in Python 3.9 lacks.
+# Builds: https://github.com/astral-sh/python-build-standalone (MPL-2.0), the
+# self-contained Python builds used by uv. Pinned to a reviewed release; the
+# hashes below match both GitHub's digests and the release's SHA256SUMS, and a
+# download that doesn't match is rejected. To upgrade: review the release, then
+# update the version, release AND all four hashes together.
+PYTHON_RUNTIME_VERSION="3.14.10"
+PYTHON_RUNTIME_RELEASE="20261026"
+PYTHON_RUNTIME_DIR="$SHARE_DIR/poketerm-python"
+python_runtime_target() {
+    # The build's target triple for this machine, or nothing if there isn't one.
+    local arch
+    case "$(uname -m)" in
+        x86_64|amd64)  arch=x86_64 ;;
+        arm64|aarch64) arch=aarch64 ;;
+        *) return 0 ;;
+    esac
+    case "$(uname -s)" in
+        Darwin) echo "$arch-apple-darwin" ;;
+        Linux)
+            # These builds need glibc; musl systems (e.g. Alpine) use their own python3.
+            if ldd --version 2>&1 | grep -qi musl; then return 0; fi
+            echo "$arch-unknown-linux-gnu" ;;
+    esac
+}
+python_runtime_sha256() {
+    case "$1" in
+        aarch64-apple-darwin)      echo "95eb8c87d16af37c54e9765e31d8c56c0d8ffa9968ea0f704f73a9b83f84e9f9" ;;
+        x86_64-apple-darwin)       echo "2fd8becd48cf0ff5f0a15df3c0db7cae7aa708dcaacf901bd30d6cdd6229370b" ;;
+        x86_64-unknown-linux-gnu)  echo "4d3c16c59ed0802a3d1d34d8bce504b15ceeaff39d62dadecc6a9fa803412aed" ;;
+        aarch64-unknown-linux-gnu) echo "90f48337bc3dd4ae6eda81e001e4c981236d403b6b5a07778bbdf94ee423dc00" ;;
+    esac
+}
+python_runtime_id() { echo "$PYTHON_RUNTIME_VERSION+$PYTHON_RUNTIME_RELEASE"; }
+RUNTIME_REQUIREMENTS="$REPO_ROOT/files/runtime-requirements.txt"
+
+# Packages trading uses (cryptography), from files/runtime-requirements.txt:
+# exact versions, every hash pinned, wheels only. $1 = the runtime's directory.
+install_runtime_packages() {
+    local dir="$1" want
+    [[ -f "$RUNTIME_REQUIREMENTS" ]] || return 1
+    want="$(sha256_file "$RUNTIME_REQUIREMENTS" | cut -d' ' -f1)"
+    [[ "$(cat "$dir/.poketerm-packages" 2>/dev/null)" == "$want" ]] && return 0
+    env ${POKETERM_DOWNLOAD_CACHE:+PIP_CACHE_DIR="$POKETERM_DOWNLOAD_CACHE/pip"} PIP_CONFIG_FILE=/dev/null \
+        "$dir/bin/python3" -I -m pip install --quiet --disable-pip-version-check --no-input \
+        --require-hashes --only-binary=:all: --no-deps -r "$RUNTIME_REQUIREMENTS" >>"$LOG_FILE" 2>&1 || return 1
+    "$dir/bin/python3" -I -c 'from cryptography import x509
+from cryptography.hazmat.primitives.asymmetric import ec' >>"$LOG_FILE" 2>&1 || return 1
+    printf '%s\n' "$want" > "$dir/.poketerm-packages"
+}
+
+python_runtime_skip() {
+    # Soft failure: poketerm falls back to the system python3.
+    printf '%s' "$C_CLEAR"
+    warn "Couldn't set up poketerm's own Python ($1) - using the system python3 instead."
+    echo "python runtime skipped: $1" >>"$LOG_FILE"
+    CURRENT_STEP=""
+    [[ -n "${py_tmp:-}" && -d "$py_tmp" ]] && rm -rf -- "$py_tmp"
+    return 1
+}
+
+install_python_runtime() {
+    # Runs in a `||` context (no set -e): every step is checked explicitly,
+    # and the existing runtime is only replaced once the new one has passed.
+    local target expected file actual cache old
+    target="$(python_runtime_target)"
+    [[ -n "$target" ]] || return 1
+    expected="$(python_runtime_sha256 "$target")"
+    [[ -n "$expected" ]] || return 1
+
+    if [[ -x "$PYTHON_RUNTIME_DIR/bin/python3" && "$(cat "$PYTHON_RUNTIME_DIR/.poketerm-runtime" 2>/dev/null)" == "$(python_runtime_id)-$target" ]]; then
+        # Same Python; bring its packages up to date if the pins changed.
+        install_runtime_packages "$PYTHON_RUNTIME_DIR" \
+            || warn "Couldn't update trading's packages - trading will use the openssl command instead."
+        return 0
+    fi
+    command -v curl >/dev/null 2>&1 || return 1
+
+    step "Installing poketerm's Python ($PYTHON_RUNTIME_VERSION, one-time download)"
+    mkdir -p "$SHARE_DIR" 2>>"$LOG_FILE" || { python_runtime_skip "can't write to $SHARE_DIR"; return 1; }
+    py_tmp="$(mktemp -d "$SHARE_DIR/.poketerm-python.XXXXXX")" || { python_runtime_skip "no temp dir"; return 1; }
+    file="cpython-$PYTHON_RUNTIME_VERSION+$PYTHON_RUNTIME_RELEASE-$target-install_only_stripped.tar.gz"
+
+    # POKETERM_DOWNLOAD_CACHE (tests): reuse a previous download. It is
+    # verified against the pinned hash exactly like a fresh one.
+    cache="${POKETERM_DOWNLOAD_CACHE:-}"
+    if [[ -n "$cache" && -f "$cache/$file" ]] && [[ "$(sha256_file "$cache/$file" | cut -d' ' -f1)" == "$expected" ]]; then
+        cp "$cache/$file" "$py_tmp/$file" 2>>"$LOG_FILE"
+    fi
+    if [[ ! -f "$py_tmp/$file" ]]; then
+        curl -fsSL --proto '=https' --tlsv1.2 --retry 2 --connect-timeout 10 --max-time 600 \
+            -o "$py_tmp/$file" \
+            "https://github.com/astral-sh/python-build-standalone/releases/download/$PYTHON_RUNTIME_RELEASE/$file" \
+            >>"$LOG_FILE" 2>&1 || { python_runtime_skip "download failed"; return 1; }
+    fi
+    actual="$(sha256_file "$py_tmp/$file" | cut -d' ' -f1)"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "expected sha256 $expected, got $actual" >>"$LOG_FILE"
+        python_runtime_skip "download did not match the pinned checksum"
+        return 1
+    fi
+    if [[ -n "$cache" ]]; then
+        mkdir -p "$cache" 2>/dev/null && cp "$py_tmp/$file" "$cache/$file.part" 2>/dev/null \
+            && mv -f "$cache/$file.part" "$cache/$file" 2>/dev/null
+    fi
+
+    tar -xzf "$py_tmp/$file" -C "$py_tmp" >>"$LOG_FILE" 2>&1 && rm -f "$py_tmp/$file" \
+        || { python_runtime_skip "could not unpack"; return 1; }
+    # Must run here and have everything poketerm needs.
+    "$py_tmp/python/bin/python3" -I -c 'import ssl, termios, fcntl, pty, json, hashlib, urllib.request, sys
+sys.exit(0 if ssl.HAS_TLSv1_3 else 1)' >>"$LOG_FILE" 2>&1 \
+        || { python_runtime_skip "it did not run on this system"; return 1; }
+    printf '%s\n' "$(python_runtime_id)-$target" > "$py_tmp/python/.poketerm-runtime"
+    install_runtime_packages "$py_tmp/python" \
+        || warn "Couldn't install trading's packages - trading will use the openssl command instead."
+
+    # Swap in: move the old one aside, move the new one in, then delete the old.
+    old=""
+    if [[ -e "$PYTHON_RUNTIME_DIR" ]]; then
+        old="$py_tmp/old"
+        mv "$PYTHON_RUNTIME_DIR" "$old" 2>>"$LOG_FILE" || { python_runtime_skip "could not replace the old one"; return 1; }
+    fi
+    if ! mv "$py_tmp/python" "$PYTHON_RUNTIME_DIR" 2>>"$LOG_FILE"; then
+        [[ -n "$old" ]] && mv "$old" "$PYTHON_RUNTIME_DIR" 2>>"$LOG_FILE"
+        python_runtime_skip "could not install"
+        return 1
+    fi
+    rm -rf -- "$py_tmp"
+    ok
+}
+
+# The Python poketerm will use: its own if installed, else the system one.
+runtime_python() {
+    if [[ -x "$PYTHON_RUNTIME_DIR/bin/python3" ]]; then echo "$PYTHON_RUNTIME_DIR/bin/python3"; else command -v python3; fi
 }
 
 # --- pokemon-go-colorscripts (fast Go build of pokemon-colorscripts) --------
@@ -474,6 +623,24 @@ install_go_colorscripts() {
     ln -sfn "$dest/pokemon-go-colorscripts" "$BIN_DIR/pokemon-go-colorscripts" 2>>"$LOG_FILE" || true
     rm -rf -- "$go_tmp"
     ok
+}
+
+check_python() {
+    local py
+    py="$(runtime_python)"
+    if [[ -z "$py" ]]; then
+        echo "No Python available: poketerm's own couldn't be installed and there is no python3" >>"$LOG_FILE"
+        printf '%s' "$C_CLEAR"
+        echo "${C_RED}poketerm needs Python.${C_RESET} Its own Python couldn't be downloaded and no python3 is installed."
+        echo "Check your internet connection (or install python3) and run the installer again."
+        false
+    fi
+    # Trading (press t in the Pokedex) needs TLS 1.3 and the openssl command.
+    if ! "$py" -c 'import ssl, sys; sys.exit(0 if ssl.HAS_TLSv1_3 else 1)' >/dev/null 2>&1; then
+        warn "this Python has no TLS 1.3, so trading won't be available (everything else works). Install a newer Python 3, e.g. brew install python"
+    elif ! "$py" -c 'import cryptography' >/dev/null 2>&1 && ! command -v openssl >/dev/null 2>&1; then
+        warn "trading needs poketerm's own Python or the openssl command, and neither is available (everything else works)"
+    fi
 }
 
 install_pokemon_colorscripts() {
@@ -648,6 +815,8 @@ do_install() {
     install_code
     seed_user_data
     link_commands
+    install_python_runtime || true
+    check_python
     install_pokemon_colorscripts
     write_install_info
     ensure_zshrc_hook
@@ -681,6 +850,7 @@ do_uninstall() {
     [[ -n "$INSTALL_ROOT" && -d "$APP_DIR" ]] && rm -rf -- "$APP_DIR"
     [[ -n "$INSTALL_ROOT" && -d "$SHARE_DIR/pokemon-colorscripts" ]] && rm -rf -- "$SHARE_DIR/pokemon-colorscripts"
     [[ -n "$INSTALL_ROOT" && -d "$SHARE_DIR/pokemon-go-colorscripts" ]] && rm -rf -- "$SHARE_DIR/pokemon-go-colorscripts"
+    [[ -n "$INSTALL_ROOT" && -d "$SHARE_DIR/poketerm-python" ]] && rm -rf -- "$SHARE_DIR/poketerm-python"
     rm -f "$BIN_DIR/poketerm" "$BIN_DIR/pokedex" "$BIN_DIR/pokemon-colorscripts" "$BIN_DIR/pokemon-go-colorscripts"
 
     if has_hook; then

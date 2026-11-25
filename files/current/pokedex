@@ -1,0 +1,8 @@
+#!/bin/sh
+# The `pokedex` command: runs the Pokedex on poketerm's own Python (installed
+# by install.sh), or the system python3 where that isn't available.
+APP="$HOME/.local/share/poketerm"
+PY="$HOME/.local/share/poketerm-python/bin/python3"
+[ -x "$PY" ] || PY="$(command -v python3)" || { echo "pokedex: Python not found - run the poketerm installer again." >&2; exit 1; }
+# -s: ignore the user's own pip packages, so nothing outside poketerm changes how it runs.
+exec "$PY" -s "$APP/pokedex.py" "$@"
