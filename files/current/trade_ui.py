@@ -33,6 +33,19 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 GO_COLORSCRIPTS = Path.home() / ".local/share/pokemon-go-colorscripts/pokemon-go-colorscripts"
 CACHE_DIR = Path.home() / ".local/share/poketerm/cache/sprite_data"
 TRAINER_FILE = Path.home() / ".local/share/poketerm/trainer.json"
+DEBUG_LOG = Path.home() / ".local/share/poketerm/trade/debug.log"
+_DEBUG = os.environ.get("POKETERM_TRADE_DEBUG") == "1"
+_T0 = time.monotonic()
+
+
+def debug(event):
+    """With POKETERM_TRADE_DEBUG=1, log timings to trade/debug.log (for bug reports)."""
+    if _DEBUG:
+        try:
+            with open(DEBUG_LOG, "a") as f:
+                f.write(f"{time.strftime('%H:%M:%S')} +{time.monotonic() - _T0:7.3f}s  {event}\n")
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -351,24 +364,53 @@ class TradePage:
         return None
 
     def close(self):
+        """Leave the trade page without waiting on the network.
+
+        Everything here talks to other computers (telling a trainer we left,
+        closing connections), so it runs in the background and you're back in
+        the Pokedex at once. That's safe: a trade that hasn't started yet has
+        nothing in escrow, and one that has started can't be cancelled anyway."""
+        debug("close: start")
         self.stop.set()
         if self.connecting:
             self.connecting["cancelled"] = True
-        if self.session:
-            self.session.cancel()
-        for part in (self.discovery, self.listener):
-            if part:
-                part.close()
-        while not self.incoming.empty():
-            try:
-                channel, _, _ = self.incoming.get_nowait()
-                channel.close(linger=0)
-            except (queue.Empty, OSError):
-                pass
+        session, parts, incoming = self.session, (self.discovery, self.listener), self.incoming
+
+        def teardown():
+            if session:
+                try:
+                    session.cancel()
+                except Exception:
+                    pass
+                debug("close: session cancelled")
+            for part in parts:
+                if part:
+                    part.close()
+            while not incoming.empty():
+                try:
+                    channel, _, _ = incoming.get_nowait()
+                    channel.close(linger=0)
+                except (queue.Empty, OSError):
+                    pass
+            debug("close: network closed")
+        threading.Thread(target=teardown, daemon=True).start()
+        debug("close: returned")
 
     def refresh_items(self):
         self.items = store.tradeable_pokemon()
         self.cursor = max(0, min(self.cursor, len(self.items) - 1))
+        self._journal_at = 0            # trades may have changed: re-read on next draw
+
+    def journal_info(self):
+        """(trades left today, pending trades), re-read at most every 2 seconds:
+        each read briefly takes the Pokedex lock, and the screen redraws often."""
+        if time.monotonic() - getattr(self, "_journal_at", 0) > 2:
+            try:
+                self._journal = (store.trades_left_today(), store.pending_trades())
+            except store.TradeError:
+                self._journal = (0, [])
+            self._journal_at = time.monotonic()
+        return self._journal
 
     def flash(self, text, colour=GREEN):
         """Show a message under the current screen. It clears after
@@ -430,8 +472,10 @@ class TradePage:
     def run(self):
         # Key-at-a-time mode from the start, so keys pressed while the page
         # is getting ready aren't lost or echoed onto the screen.
+        debug("trade page: opening")
         with readchar.cbreak():
             problem = self.open()
+            debug("trade page: open" + (f" (problem: {problem})" if problem else ""))
             if problem:
                 self.message("Pokemon Trading", problem, RED)
                 return
@@ -451,6 +495,7 @@ class TradePage:
             if key is None:
                 continue
             if self.handle_key(key) == "quit":
+                debug(f"key {key!r}: quit")
                 return
             self.draw()
             last_draw = time.monotonic()
@@ -689,10 +734,7 @@ class TradePage:
         s.top()
         s.center(f"{YELLOW}Pokemon Trading{RESET}")
         s.sep()
-        try:
-            left = store.trades_left_today()
-        except store.TradeError:
-            left = 0
+        left = self.journal_info()[0]
         colour = GREEN if left else RED
         s.row(f"{YELLOW}Trainer:{RESET} {proto.clean_name(self.trainer['name'])}   "
               f"{YELLOW}Level:{RESET} {self.trainer['level']}   "
@@ -731,6 +773,15 @@ class TradePage:
         s.bottom()
 
     def draw(self):
+        started = time.monotonic()
+        try:
+            self._draw()
+        finally:
+            took = time.monotonic() - started
+            if took > 0.2:
+                debug(f"slow draw ({self.view}): {took:.2f}s")
+
+    def _draw(self):
         s = Screen()
         self.header(s)
         if self.view == "trainers":
@@ -745,11 +796,7 @@ class TradePage:
         s.show()
 
     def pending_line(self, s):
-        try:
-            pending = store.pending_trades()
-        except store.TradeError:
-            return
-        for p in pending[:2]:
+        for p in self.journal_info()[1][:2]:
             s.wrap(f"Waiting to finish a trade with {proto.clean_name(p['peer']['name'])} "
                    f"({store.display(p['give'])} for {store.display(p['receive'])}) - it completes "
                    f"automatically when you're both on this page.", YELLOW)
@@ -885,3 +932,4 @@ def open_trade_page():
         page.run()
     except KeyboardInterrupt:
         page.close()
+    debug("trade page: back to the Pokedex")

@@ -354,6 +354,7 @@ def main():
                 trade_ui.open_trade_page()
                 pokedex = load_pokedex()      # trades change what you own
                 clear()
+                trade_ui.debug("pokedex: list redrawn")
             elif key == readchar.key.UP:
                 cursor = max(0, cursor - 1)
                 if cursor < (page - 1) * PAGE_SIZE: page -= 1
