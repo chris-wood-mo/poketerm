@@ -21,7 +21,7 @@ pokedex_lock() {
     zmodload zsh/system 2>/dev/null || return 0   # no flock support: carry on unlocked
     mkdir -p "${POKEDEX_FILE:h}"
     [[ -e "$POKEDEX_FILE.lock" ]] || : >> "$POKEDEX_FILE.lock"   # zsystem flock won't create it
-    if ! zsystem flock -t 10 -f POKEDEX_LOCK_FD "$POKEDEX_FILE.lock" 2>/dev/null; then
+    if ! zsystem flock -t 30 -f POKEDEX_LOCK_FD "$POKEDEX_FILE.lock" 2>/dev/null; then
         echo "poketerm: another poketerm is still updating your Pokedex - skipped this catch."
         return 1
     fi
@@ -34,7 +34,12 @@ pokedex_unlock() {
 
 # === MAKE POKEDEX FILE IF IT DOESNT EXIST ===
 mkdir -p "$(dirname "$POKEDEX_FILE")"
-touch "$POKEDEX_FILE"
+if [[ ! -e "$POKEDEX_FILE" ]]; then
+    # A missing pokedex (first run, or the user deleted it) starts fresh. Drop
+    # any old checksum so it isn't mistaken for tampering and lock the user out.
+    : > "$POKEDEX_FILE"
+    command rm -f -- "$POKEDEX_HASH"
+fi
 chmod 444 "$POKEDEX_FILE"
 
 usage() {
@@ -106,22 +111,24 @@ case "$1" in
         ;;
     -r|--remove)
         if [[ -n "$2" ]]; then
+            # No checksum check here: removing a manually added Pokemon is how
+            # users recover from the "modified outside poketerm" error.
             pokedex_lock || return 1
-            if [[ -f "$POKEDEX_HASH" ]]; then
-                if command -v sha256sum >/dev/null 2>&1; then
-                    sha256sum -c "$POKEDEX_HASH" >/dev/null 2>&1 || true
-                else
-                    shasum -a 256 -c "$POKEDEX_HASH" >/dev/null 2>&1 || { echo "Pokedex modified outside poketerm, please use 'poketerm --remove \"YOUR_ADDED_POKEMON\"' to move the manually added pokemon from the pokedex."; return 1; }
-                fi
-            fi
 
-            if ! grep -Fqi "$2 " "$POKEDEX_FILE"; then
+            # Exact name match (case-insensitive), normal and shiny entries.
+            # e.g. "mew" removes mew but not mewtwo; "chu" removes nothing.
+            if ! awk -v n="${(L)2}" '
+                    { base = $0; sub(/[ \t]+[0-9]+[ \t]*$/, "", base); sub(/ \(shiny\)$/, "", base) }
+                    tolower(base) == n { found = 1; next }
+                    { print }
+                    END { exit !found }
+                ' "$POKEDEX_FILE" > "$SORTED_FILE"; then
+                command rm -f -- "$SORTED_FILE"
                 echo "Pokemon '$2' not found in pokedex"
                 return 1
             fi
 
             chmod 644 "$POKEDEX_FILE"
-            grep -Fvi "$2 " "$POKEDEX_FILE" > "$SORTED_FILE" &&
             command mv -f "$SORTED_FILE" "$POKEDEX_FILE"
             chmod 444 "$POKEDEX_FILE"
 
@@ -134,7 +141,7 @@ case "$1" in
             return 0
         else 
             echo "ERROR: Please specify a pokemon to remove from the pokedex e.g. poketerm --remove pikachu"
-            return 0
+            return 1
         fi
         ;;
     -f|--fix-pokedex)
@@ -145,25 +152,39 @@ case "$1" in
             shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
         fi
         return 0
+        ;;
+    "")
+        ;;   # normal start: catch a Pokemon
+    *)
+        echo "poketerm: unknown option '$1'"
+        echo ""
+        usage
+        return 1
+        ;;
 esac
 
-pokedex_lock || return 1
-
-if [[ -f "$POKEDEX_HASH" ]]; then
+# Checks the pokedex hasn't been edited outside poketerm. Called with the
+# pokedex lock held, right before the catch is written.
+pokedex_untampered() {
+    [[ -f "$POKEDEX_HASH" ]] || return 0
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum -c "$POKEDEX_HASH" >/dev/null 2>&1 || { echo "Pokedex modified outside poketerm, please use 'poketerm --remove \"YOUR_ADDED_POKEMON\"' to move the manually added pokemon from the pokedex."; return 1; }
+        sha256sum -c "$POKEDEX_HASH" >/dev/null 2>&1
     else
-        shasum -a 256 -c "$POKEDEX_HASH" >/dev/null 2>&1 || { echo "Pokedex modified outside poketerm, please use 'poketerm --remove \"YOUR_ADDED_POKEMON\"' to move the manually added pokemon from the pokedex."; return 1; }
+        shasum -a 256 -c "$POKEDEX_HASH" >/dev/null 2>&1
     fi
-fi
+}
 
 # === START SYSTEM INFO IN THE BACKGROUND ===
-# neofetch is the slowest part of startup, so it runs while the Pokemon is
-# caught and XP is awarded, and is only waited for when it's time to draw.
+# System details come from fastfetch, or from neofetch on systems that only
+# have that. Either runs while the Pokemon is caught and XP is awarded, and
+# is only waited for when it's time to draw. sysinfo.py prints fastfetch's
+# results exactly the way neofetch did, so both look the same.
 FETCH_OUT_FILE="$(mktemp)"
 FETCH_CFG_FILE="$(mktemp)"
 FETCH_PID=""
-if command -v neofetch >/dev/null 2>&1; then
+if command -v fastfetch >/dev/null 2>&1 && [[ -r "$POKETERM_PATH/sysinfo.py" ]]; then
+    FETCH_CMD=fastfetch
+elif command -v neofetch >/dev/null 2>&1; then
     FETCH_CMD=neofetch
 elif command -v neowofetch >/dev/null 2>&1; then
     FETCH_CMD=neowofetch
@@ -177,7 +198,7 @@ fi
 HOST_CACHE="$POKETERM_PATH/.host_cache"
 HOST_KEY=""
 CACHED_HOST=""
-if [[ "$(uname -s)" == Darwin ]]; then
+if [[ "$FETCH_CMD" == *neofetch && "$(uname -s)" == Darwin ]]; then
     HOST_KEY="$(sysctl -n hw.model 2>/dev/null)"
     if [[ -n "$HOST_KEY" && -r "$HOST_CACHE" ]]; then
         IFS=$'\t' read -r cached_key cached_value < "$HOST_CACHE"
@@ -185,7 +206,12 @@ if [[ "$(uname -s)" == Darwin ]]; then
     fi
 fi
 
-if [[ -n "$FETCH_CMD" ]]; then
+if [[ "$FETCH_CMD" == fastfetch ]]; then
+    # --config none: the user's own fastfetch config must not change this.
+    { fastfetch --config none --format json -s OS:Host:Kernel:Uptime:Packages:Shell:Terminal 2>/dev/null </dev/null \
+        | python3 "$POKETERM_PATH/sysinfo.py" >"$FETCH_OUT_FILE" 2>/dev/null; } &
+    FETCH_PID=$!
+elif [[ -n "$FETCH_CMD" ]]; then
     cat > "$FETCH_CFG_FILE" <<'EOF'
 print_info() {
     info "OS" distro
@@ -286,6 +312,25 @@ else
     display_name="$base_name"
 fi
 
+# === RECORD THE CATCH (pokedex lock held only for this part) ===
+# Everything above (choosing the Pokemon, drawing it, the shiny roll) runs
+# without the lock, so many terminals opening at once only queue for the few
+# milliseconds it takes to check and rewrite the pokedex.
+stop_background_fetch() {
+    [[ -n "$FETCH_PID" ]] && kill "$FETCH_PID" 2>/dev/null
+    command rm -f -- "$FETCH_OUT_FILE" "$FETCH_CFG_FILE"
+}
+if ! pokedex_lock; then
+    stop_background_fetch
+    return 1
+fi
+if ! pokedex_untampered; then
+    pokedex_unlock
+    stop_background_fetch
+    echo "Pokedex modified outside poketerm, please use 'poketerm --remove \"YOUR_ADDED_POKEMON\"' to move the manually added pokemon from the pokedex."
+    return 1
+fi
+
 chmod 644 "$POKEDEX_FILE"
 
 # === UPDATE POKEDEX WITH COUNT ===
@@ -313,24 +358,20 @@ END {
 ' "$POKEDEX_FILE" > "$SORTED_FILE" && command mv -f "$SORTED_FILE" "$POKEDEX_FILE"
 
 # === SORT POKEDEX BY GENERATION ORDER ===
-for GEN_FILE in "$GEN_DIR"/gen*_list.txt; do
-    if grep -qx "$base_name" "$GEN_FILE"; then
-        awk '
-            NR==FNR { order[$0]=NR; next }
-            {
-                line=$0
-                base=$0
-                sub(/ \(shiny\)$/, "", base)
-                sort_order = (base in order) ? order[base] : 9999
-                print sort_order "\t" line
-            }
-        ' "$GEN_FILE" "$POKEDEX_FILE" \
-        | sort -n \
-        | cut -f2- > "$SORTED_FILE"
-        command mv -f "$SORTED_FILE" "$POKEDEX_FILE"
-        break
-    fi
-done
+# National Dex order across all generations (gen1..gen8 lists in order), each
+# Pokemon's normal entry before its shiny one. Unknown names go last.
+awk -v dex="$POKEDEX_FILE" '
+    FILENAME != dex { if (!($0 in order)) order[$0] = ++n; next }
+    {
+        base = $0
+        sub(/[ \t]+[0-9]+[ \t]*$/, "", base)
+        shiny = sub(/ \(shiny\)$/, "", base)
+        printf "%d\t%d\t%s\n", ((base in order) ? order[base] : 999999), shiny, $0
+    }
+' "$GEN_DIR"/gen*_list.txt "$POKEDEX_FILE" \
+    | sort -t "$(printf '\t')" -k1,1n -k2,2n -k3,3 \
+    | cut -f3- > "$SORTED_FILE" \
+    && command mv -f "$SORTED_FILE" "$POKEDEX_FILE"
 
 chmod 444 "$POKEDEX_FILE"
 
@@ -369,6 +410,19 @@ XP_PID=$!
 
 () {
     setopt localoptions extendedglob
+
+    # Widths below are measured in characters. In a non-UTF-8 locale (LANG=C,
+    # common on minimal Linux systems) zsh would count the sprite's block
+    # glyphs as 3 bytes each and misalign the system details, so switch to a
+    # UTF-8 locale just for this function if one is available.
+    local probe="▀"
+    if (( ${#probe} != 1 )); then
+        local LC_ALL loc
+        for loc in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+            LC_ALL="$loc" 2>/dev/null
+            (( ${#probe} == 1 )) && break
+        done
+    fi
 
     local ansi_re=$'\e''\[[0-9;?]#[a-zA-Z]'
     local user_name="${USER:-$(whoami 2>/dev/null || echo unknown)}"

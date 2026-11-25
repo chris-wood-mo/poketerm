@@ -61,8 +61,9 @@ installer() {
 total_catches() { awk '{ s += $NF } END { print s + 0 }' "$APP/pokedex.txt"; }
 trainer_field() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(eval('d' + sys.argv[2]))" "$APP/trainer.json" "$1"; }
 hash_ok()       { (cd / && shasum -a 256 -c "$APP/pokedex.txt.sha256" >/dev/null 2>&1); }
-# The Pokemon caught by the last run (diff of the pokedex before/after).
-caught_name()   { diff <(echo "$1") <(cat "$APP/pokedex.txt") | sed -n 's/^> //p' | sed -E 's/ [0-9]+$//; s/ \(shiny\)$//' | head -n 1; }
+# The Pokemon caught by the last run (the pokedex line that is new or changed).
+caught_name()   { grep -vxF -f <(printf '%s\n' "$1") "$APP/pokedex.txt" | sed -E 's/ [0-9]+$//; s/ \(shiny\)$//' | head -n 1; }
+same_file()     { [[ "$(cat "$1")" == "$(cat "$2")" ]]; }   # no cmp/diff on minimal systems
 colorscripts()  {
     local go="$T_HOME/.local/share/pokemon-go-colorscripts/pokemon-go-colorscripts"
     if [[ -x "$go" ]]; then echo "$go"; else command -v pokemon-go-colorscripts || command -v pokemon-colorscripts; fi
@@ -103,7 +104,7 @@ if [[ -n "$mon" && -n "$cs" ]]; then
     plain < "$LAST_OUT" | head -n "$rows" | perl -CSD -ne "chomp; print substr(\$_, 0, $width) =~ s/\s+\$//r, \"\n\"" > "$SANDBOX/shown_sprite"
     sed -i.bak -e 's/[[:space:]]*$//' "$SANDBOX/expected_sprite"
     check "sprite for $mon is exactly the colorscripts sprite (${width}x${rows}, not resized)" \
-        cmp -s "$SANDBOX/expected_sprite" "$SANDBOX/shown_sprite"
+        same_file "$SANDBOX/expected_sprite" "$SANDBOX/shown_sprite"
     check "Pokemon name shown under the sprite" grep -q "^$mon" <(plain < "$LAST_OUT")
 else
     fail "could determine the caught Pokemon and colorscripts"
@@ -114,18 +115,149 @@ check "no resizing leftovers installed" test ! -e "$APP/sprite.py" -a ! -d "$APP
 section "Many terminals opening at once"
 shiny_catches() { awk '/\(shiny\)/ { s += $NF } END { print s + 0 }' "$APP/pokedex.txt"; }
 start_xp="$(trainer_field "['total_xp']")"; start_catches="$(total_catches)"; start_shiny="$(shiny_catches)"
-for i in 1 2 3 4 5 6 7 8; do
+for i in $(seq 1 30); do
     ( poketerm_run; echo "$?" > "$SANDBOX/parallel.$i" ) &
 done
 wait
 caught=$(( $(total_catches) - start_catches ))
 shiny=$(( $(shiny_catches) - start_shiny ))
 gained=$(( $(trainer_field "['total_xp']") - start_xp ))
-eq    "8 terminals at once: every catch recorded"      "$caught" "8"
-eq    "8 terminals at once: XP exactly matches catches" "$gained" "$(( (caught - shiny) * 10 + shiny * 150 ))"
-check "8 terminals at once: none reported a tampered pokedex" \
+eq    "30 terminals at once: every catch recorded"      "$caught" "30"
+eq    "30 terminals at once: XP exactly matches catches" "$gained" "$(( (caught - shiny) * 10 + shiny * 150 ))"
+check "30 terminals at once: all succeeded, none reported tampering" \
     test "$(cat "$SANDBOX"/parallel.* | sort -u)" = "0"
 check "pokedex checksum valid after parallel starts" hash_ok
+
+# -----------------------------------------------------------------------------
+section "Recovery and edge cases"
+reset_dex() { chmod 644 "$APP/pokedex.txt"; printf '%s\n' "$@" > "$APP/pokedex.txt"; chmod 444 "$APP/pokedex.txt"; shasum -a 256 "$APP/pokedex.txt" > "$APP/pokedex.txt.sha256"; }
+reset_dex "pikachu 3" "pikachu (shiny) 1" "raichu 2" "mew 1" "mewtwo 4" "mr-mime 1" "mime-jr 2"
+poketerm_cmd -- --remove chu
+check "--remove needs an exact name ('chu' removes nothing)" grep -q "^pikachu 3" "$APP/pokedex.txt"
+poketerm_cmd -- --remove mime
+check "--remove 'mime' keeps mr-mime and mime-jr" grep -q "^mr-mime 1" "$APP/pokedex.txt"
+poketerm_cmd -- --remove MEW
+check "--remove is case-insensitive and exact (mew gone, mewtwo kept)" test "$(grep -c '^mew ' "$APP/pokedex.txt")" = 0 -a "$(grep -c '^mewtwo 4' "$APP/pokedex.txt")" = 1
+poketerm_cmd -- --remove pikachu
+check "--remove removes normal and shiny entries" test "$(grep -c '^pikachu' "$APP/pokedex.txt")" = 0
+check "checksum valid after --remove"  hash_ok
+
+chmod 644 "$APP/pokedex.txt"; echo "snorlax 50" >> "$APP/pokedex.txt"; chmod 444 "$APP/pokedex.txt"
+before="$(cat "$APP/pokedex.txt")"
+poketerm_run
+eq    "hand-edited pokedex is refused"  "$?" "1"
+check "refusal explains how to fix it"  grep -q "modified outside poketerm" "$LAST_OUT"
+eq    "refused catch leaves pokedex untouched" "$(cat "$APP/pokedex.txt")" "$before"
+poketerm_cmd -- --remove snorlax
+eq    "--remove works on a hand-edited pokedex (the documented fix)" "$?" "0"
+poketerm_run
+eq    "catching works again after --remove" "$?" "0"
+
+rm -f "$APP/pokedex.txt"
+poketerm_run
+eq    "deleted pokedex.txt starts fresh instead of locking the user out" "$?" "0"
+eq    "fresh pokedex has the new catch" "$(total_catches)" "1"
+
+cp "$APP/trainer.json" "$SANDBOX/trainer.good"
+echo '{"name": "Ash", "total_xp": 12' > "$APP/trainer.json"
+poketerm_run
+eq    "corrupt trainer.json doesn't stop catching" "$?" "0"
+check "corrupt trainer.json is kept for recovery" bash -c 'compgen -G "$1" >/dev/null' _ "$APP/trainer.json.corrupt-*"
+python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$APP/trainer.json" && pass "trainer.json is valid again" || fail "trainer.json still invalid"
+rm -f "$APP"/trainer.json.corrupt-*; cp "$SANDBOX/trainer.good" "$APP/trainer.json"
+
+before="$(total_catches)"
+poketerm_cmd -- --not-a-real-option
+eq    "unknown option is rejected"       "$?" "1"
+eq    "unknown option doesn't catch"     "$(total_catches)" "$before"
+check "unknown option shows the help"    grep -q "Usage:" "$LAST_OUT"
+
+for locale in C en_US.UTF-8; do
+    poketerm_run LANG="$locale" LC_ALL="$locale"
+    cols="$(perl -CSD -ne 's/\e\[[0-9;?]*[a-zA-Z]//g; print index($_, $1), "\n" if /(tester|OS:|Host:|Kernel:|Shell:)/' "$LAST_OUT" | sort -u | wc -l | tr -d ' ')"
+    check "LANG=$locale: username and system details line up in one column" test "$cols" -eq 1
+done
+
+# Keys pressed while a pokedex screen is still drawing must not be lost.
+typeahead="$(cd "$APP" && python3 - <<'EOF'
+import os, pty, sys, time, select
+pid, fd = pty.fork()
+if pid == 0:
+    import readchar
+    print("drawing", flush=True); time.sleep(0.5)
+    print("GOT=" + repr(readchar.readkey()), flush=True); os._exit(0)
+out, sent, end = b"", False, time.time() + 4
+while time.time() < end and b"GOT=" not in out:
+    if select.select([fd], [], [], 0.1)[0]:
+        try: out += os.read(fd, 1024)
+        except OSError: break
+    if b"drawing" in out and not sent:
+        time.sleep(0.1); os.write(fd, b"b"); sent = True
+if b"GOT=" not in out: os.kill(pid, 9)
+print("ok" if b"GOT='b'" in out else ("unsupported" if b"Function not implemented" in out else "lost"))
+EOF
+)"
+if [[ "$typeahead" == unsupported ]]; then
+    echo "  - skipped: pokedex key handling (this environment has no terminal support, e.g. CPU emulation)"
+else
+    eq    "pokedex keeps keys pressed while a screen is drawing" "$typeahead" "ok"
+fi
+
+# -----------------------------------------------------------------------------
+section "System details (fastfetch, or neofetch)"
+details() { plain < "$LAST_OUT" | grep -oE '(OS|Host|Kernel|Uptime|Packages|Shell|Terminal): .*' ; }
+if command -v fastfetch >/dev/null 2>&1 || command -v neofetch >/dev/null 2>&1; then
+    poketerm_run
+    if details | grep -q '^OS: ' && details | grep -q '^Kernel: '; then
+        pass "system details shown beside the Pokemon"
+    else
+        fail "system details shown beside the Pokemon" "$(plain < "$LAST_OUT" | tail -12 | tr '\n' '|')"
+    fi
+else
+    echo "  - skipped: neither fastfetch nor neofetch is installed"
+fi
+
+# With fastfetch, each line must be exactly what neofetch printed, so
+# terminals look the same after switching. Compared directly (uptime can
+# tick over a minute between the two, so allow one retry).
+if command -v fastfetch >/dev/null 2>&1 && command -v neofetch >/dev/null 2>&1; then
+    sed -n '/^print_info() {/,/^}/p' "$APP/poketerm" > "$SANDBOX/neofetch.cfg"
+    fetch_compare() {
+        POKETERM_RUNNING=1 neofetch --config "$SANDBOX/neofetch.cfg" --off </dev/null 2>/dev/null \
+            | perl -pe 's/\e\[\?\d+[hl]//g' | grep -v '^[[:space:]]*$' > "$SANDBOX/neo.out"
+        fastfetch --config none --format json -s OS:Host:Kernel:Uptime:Packages:Shell:Terminal 2>/dev/null </dev/null \
+            | python3 "$APP/sysinfo.py" > "$SANDBOX/ff.out"
+        same_file "$SANDBOX/neo.out" "$SANDBOX/ff.out"
+    }
+    if fetch_compare || fetch_compare; then
+        pass "fastfetch details are byte-for-byte what neofetch showed"
+    else
+        fail "fastfetch details are byte-for-byte what neofetch showed" \
+            "neofetch: $(plain < "$SANDBOX/neo.out" | tr '\n' '|')  fastfetch: $(plain < "$SANDBOX/ff.out" | tr '\n' '|')"
+    fi
+else
+    echo "  - skipped: byte-for-byte comparison needs both fastfetch and neofetch installed"
+fi
+
+# A broken or odd fastfetch must never stop a catch or print an error.
+stub="$T_HOME/.local/bin/fastfetch"
+for kind in "prints garbage" "fails" "returns odd values"; do
+    case "$kind" in
+        "prints garbage")     body='echo "not json"' ;;
+        "fails")              body='exit 3' ;;
+        "returns odd values") body='echo "[{\"type\":\"OS\",\"result\":{\"prettyName\":7}},{\"type\":\"Uptime\",\"result\":{\"uptime\":\"x\"}}]"' ;;
+    esac
+    printf '#!/bin/sh\n%s\n' "$body" > "$stub"; chmod +x "$stub"
+    before="$(total_catches)"
+    poketerm_run
+    rc=$?
+    if [[ $rc == 0 && "$(total_catches)" == $((before + 1)) ]] && ! grep -qi "traceback\|error" "$LAST_OUT"; then
+        pass "fastfetch that $kind: Pokemon still caught, no errors shown"
+    else
+        fail "fastfetch that $kind: Pokemon still caught, no errors shown" "exit $rc; $(plain < "$LAST_OUT" | tail -5 | tr '\n' '|')"
+    fi
+done
+rm -f "$stub"
 
 # -----------------------------------------------------------------------------
 section "Generations"
@@ -143,7 +275,7 @@ cp "$T_HOME/.zshrc" "$SANDBOX/zshrc.before"
 if installer --update; then pass "update succeeds"; else fail "update succeeds" "$(tail -5 "$SANDBOX/install.log")"; fi
 eq    "XP kept"                        "$(trainer_field "['total_xp']")" "$xp_before"
 eq    "pokedex kept"                   "$(cat "$APP/pokedex.txt")" "$dex_before"
-check "zshrc unchanged by update"      cmp -s "$T_HOME/.zshrc" "$SANDBOX/zshrc.before"
+check "zshrc unchanged by update"      same_file "$T_HOME/.zshrc" "$SANDBOX/zshrc.before"
 check "progress backed up before update" test -f "$(ls -d "$APP"/backups/*/ | tail -n 1)trainer.json"
 poketerm_run
 eq    "first terminal after update works" "$?" "0"

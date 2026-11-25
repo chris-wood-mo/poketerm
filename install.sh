@@ -208,8 +208,17 @@ preflight() {
         fi
     fi
     ok
-    if ! command -v neofetch >/dev/null 2>&1 && ! command -v neowofetch >/dev/null 2>&1; then
-        warn "neofetch not found - system details will be hidden until it is installed (e.g. brew install neofetch)"
+    if ! command -v fastfetch >/dev/null 2>&1 && ! command -v neofetch >/dev/null 2>&1 && ! command -v neowofetch >/dev/null 2>&1; then
+        local how="brew install fastfetch"
+        if [[ "$(uname -s)" != Darwin ]]; then
+            if command -v apt-get >/dev/null 2>&1; then how="sudo apt install fastfetch, or neofetch on Ubuntu 24.04 / Debian 12 and older"
+            elif command -v dnf >/dev/null 2>&1; then how="sudo dnf install fastfetch"
+            elif command -v pacman >/dev/null 2>&1; then how="sudo pacman -S fastfetch"
+            elif command -v zypper >/dev/null 2>&1; then how="sudo zypper install fastfetch"
+            else how="see https://github.com/fastfetch-cli/fastfetch"
+            fi
+        fi
+        warn "fastfetch not found - system details will be hidden until it is installed ($how)"
     fi
 }
 

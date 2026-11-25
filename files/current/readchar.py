@@ -38,7 +38,9 @@ def readkey() -> str:
     fd = sys.stdin.fileno()
     original = termios.tcgetattr(fd)
     try:
-        tty.setcbreak(fd)
+        # TCSANOW, not the default TCSAFLUSH: flushing would throw away keys
+        # the user pressed while the screen was still drawing.
+        tty.setcbreak(fd, termios.TCSANOW)
         first = os.read(fd, 1)
         if not first:
             return ""

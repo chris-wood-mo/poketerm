@@ -188,6 +188,18 @@ def _write_trainer(trainer):
     os.replace(tmp_path, TRAINER_FILE)
 
 
+def _keep_corrupt_copy(text):
+    """Save an unparseable trainer.json next to it before it's replaced, so
+    the player's progress can still be recovered by hand."""
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = TRAINER_FILE.with_name(f"{TRAINER_FILE.name}.corrupt-{stamp}")
+    try:
+        backup.write_text(text)
+    except OSError:
+        pass
+
+
 def _locked_trainer_update(update_fn):
     TRAINER_FILE.parent.mkdir(parents=True, exist_ok=True)
     lock_path = TRAINER_FILE.with_suffix(".lock")
@@ -195,9 +207,13 @@ def _locked_trainer_update(update_fn):
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             if TRAINER_FILE.exists():
+                # An unreadable file (OSError) propagates: never overwrite
+                # data we couldn't read.
+                text = TRAINER_FILE.read_text()
                 try:
-                    trainer = json.loads(TRAINER_FILE.read_text())
-                except (json.JSONDecodeError, OSError):
+                    trainer = json.loads(text)
+                except json.JSONDecodeError:
+                    _keep_corrupt_copy(text)
                     trainer = {}
             else:
                 trainer = {}

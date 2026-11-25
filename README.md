@@ -18,6 +18,7 @@ This repository provides a simple service to "catch" Pokemon created from pokemo
 - macOS or Linux
 - zsh
 - python3
+- Optional: [fastfetch](https://github.com/fastfetch-cli/fastfetch)
 
 ## Installation
 

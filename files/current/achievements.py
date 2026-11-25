@@ -237,7 +237,24 @@ def update_trainer(update_fn):
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            trainer = load_trainer()
+            if TRAINER_FILE.exists():
+                # Same rules as trainer._locked_trainer_update: an unreadable
+                # file propagates (never overwritten); a corrupt one is kept.
+                text = TRAINER_FILE.read_text()
+                try:
+                    trainer = json.loads(text)
+                    if not isinstance(trainer, dict):
+                        raise ValueError("not an object")
+                except ValueError:
+                    from datetime import datetime
+                    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    try:
+                        TRAINER_FILE.with_name(f"{TRAINER_FILE.name}.corrupt-{stamp}").write_text(text)
+                    except OSError:
+                        pass
+                    trainer = {"hall_of_fame": []}
+            else:
+                trainer = {"hall_of_fame": []}
             result = update_fn(trainer)
             _write_trainer_unlocked(result if isinstance(result, dict) else trainer)
             return trainer
