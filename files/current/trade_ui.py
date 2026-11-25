@@ -27,6 +27,7 @@ RESET = "\033[0m"
 INVERT = "\033[7m"
 
 WIDTH = 58                  # inside the frame
+STATUS_SECONDS = 15         # how long a message under the screen stays
 PAGE_SIZE = 10
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 GO_COLORSCRIPTS = Path.home() / ".local/share/pokemon-go-colorscripts/pokemon-go-colorscripts"
@@ -319,6 +320,7 @@ class TradePage:
         self.address = ""
         self.status = ""
         self.status_colour = GREEN
+        self.status_at = 0.0
         self.stop = threading.Event()
         self.resolving = set()
         self.trainer = read_trainer()
@@ -369,7 +371,12 @@ class TradePage:
         self.cursor = max(0, min(self.cursor, len(self.items) - 1))
 
     def flash(self, text, colour=GREEN):
-        self.status, self.status_colour = text, colour
+        """Show a message under the current screen. It clears after
+        STATUS_SECONDS, when a trade connects, or when the screen changes."""
+        self.status, self.status_colour, self.status_at = text, colour, time.monotonic()
+
+    def clear_status(self):
+        self.status = ""
 
     # -- network callbacks (background threads) ------------------------------
     def on_channel(self, channel):
@@ -484,6 +491,7 @@ class TradePage:
             self.session = proto.TradeSession(channel, self.identity, self.trainer["name"], "b",
                                               first_hello=hello, validator=validator)
             self.cursor = 0
+            self.clear_status()
             self.session.start()
             self.view = "session"
             changed = True
@@ -550,6 +558,7 @@ class TradePage:
             return "quit"
         if key == "c":
             self.view, self.address = "address", ""
+            self.clear_status()
             return
         if key == readchar.key.ENTER and peers and self.can_trade():
             peer = peers[min(self.peer_cursor, len(peers) - 1)]
@@ -581,10 +590,19 @@ class TradePage:
         self.connecting, self.view, self.status = attempt, "connecting", ""
 
         def work():
-            try:
-                result = lan.connect(self.identity, host, port, fp, timeout=6)
-            except (OSError, lan.ChannelClosed) as e:
-                result = e
+            # macOS can refuse the first local-network connection right after
+            # an app is given access ("No route to host"): try a couple more times.
+            for tries in range(3):
+                try:
+                    result = lan.connect(self.identity, host, port, fp, timeout=6)
+                    break
+                except (OSError, lan.ChannelClosed) as e:
+                    result = e
+                    if getattr(e, "errno", None) != errno.EHOSTUNREACH or attempt["cancelled"]:
+                        break
+                    time.sleep(1)
+            if not isinstance(result, lan.Channel):
+                result.address = f"{host}:{port}"
             self.connected.put((attempt, result))
         threading.Thread(target=work, daemon=True).start()
 
@@ -605,6 +623,7 @@ class TradePage:
                 continue
             self.session = proto.TradeSession(result, self.identity, self.trainer["name"], "a")
             self.cursor = 0
+            self.clear_status()
             self.session.start()
             self.view = "session"
         return changed
@@ -617,9 +636,11 @@ class TradePage:
     def connect_problem(self, label, e):
         """A plain-words reason a connection failed, and what to do about it."""
         code = getattr(e, "errno", None)
+        where = getattr(e, "address", "")
         if code in (errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EPERM, errno.EACCES) and sys.platform == "darwin":
-            return (f"macOS blocked the connection to {label}. Allow {self.terminal_app()} in System Settings > "
-                    f"Privacy & Security > Local Network on this Mac, then try again.")
+            return (f"macOS blocked the connection to {label} ({where}). Check {self.terminal_app()} is allowed in "
+                    f"System Settings > Privacy & Security > Local Network on this Mac. If it already is, quit "
+                    f"and reopen {self.terminal_app()} - macOS only applies the setting to newly opened apps.")
         if code in (errno.EHOSTUNREACH, errno.ENETUNREACH):
             return f"Couldn't reach {label}: no route to their computer. Are you on the same network?"
         if code == errno.ECONNREFUSED:
@@ -702,6 +723,8 @@ class TradePage:
     def footer(self, s, keys):
         s.sep()
         s.row(keys)
+        if self.status and time.monotonic() - self.status_at > STATUS_SECONDS:
+            self.status = ""
         if self.status:
             s.sep()
             s.wrap(self.status, self.status_colour)
