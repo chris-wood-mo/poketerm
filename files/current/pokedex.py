@@ -108,68 +108,264 @@ def get_all_gen_progress():
 # -----------------------
 # Rendering
 # -----------------------
-BOX_WIDTH = 37
-PAGE_SIZE = 15
+LIST_WIDTH = 40          # the list screen's width inside the device
+MAX_PAGE = 15            # list rows when the window has room
+GREY = "\033[38;5;245m"
+BOLD = "\033[1m"
 
-def count_cell(icon, color, value):
-    return f"{color}{icon}{RESET} {value:<3}"
+_dex_numbers = None
 
-def draw(gen, page, cursor, pkm_list, pokedex):
-    sys.stdout.write("\033[H")
 
+def dex_number(name):
+    """National Pokedex number, from the generation lists."""
+    global _dex_numbers
+    if _dex_numbers is None:
+        _dex_numbers, n = {}, 0
+        for gen in range(1, 9):
+            try:
+                for p in load_generation(gen):
+                    n += 1
+                    _dex_numbers.setdefault(p, n)
+            except SystemExit:
+                pass
+    return _dex_numbers.get(name, 0)
+
+
+REGIONS = ["Kanto", "Johto", "Hoenn", "Sinnoh", "Unova", "Kalos", "Alola", "Galar"]
+
+
+def ask_nickname(rec, name):
+    """Ask for a nickname on the device's screen. Empty clears it; returns the name kept."""
+    import collection, device
+    error = ""
+    while True:
+        lines = [f"{YELLOW}{BOLD}Nickname your {pretty(name)}{RESET}", "",
+                 f"{collection.summary(rec)}", "",
+                 "Up to 12 letters, numbers, spaces and . ' -",
+                 "Leave it empty and press Enter to clear it."]
+        if rec.get("nickname"):
+            lines.append(f"Current nickname: {rec['nickname']}")
+        if error:
+            lines += ["", f"{RED}{error}{RESET}"]
+        typed = device.prompt(lines, "Nickname:", width=46, info=[f"{BOLD}NICKNAME{RESET}", "",
+                              "It travels with this", "Pokemon if you trade it."],
+                              keys=[("⏎", "Save")], slots=("Nickname", pretty(name)[:12]),
+                              max_len=collection.MAX_NICKNAME,
+                              allowed=lambda ch: ch.isalnum() or ch in " .'-")
+        try:
+            return collection.set_nickname(rec["id"], typed.strip())
+        except ValueError as e:
+            error = str(e)
+
+
+def home_region(name):
+    """The region a Pokemon comes from (from its generation)."""
+    for gen in range(1, 9):
+        try:
+            if name in load_generation(gen):
+                return REGIONS[gen - 1]
+        except SystemExit:
+            pass
+    return "Unknown"
+
+
+def pretty(name):
+    return name.replace("-", " ").title()
+
+
+_traded_cache = {}
+
+
+def traded_from(name):
+    """Who you've received this Pokemon from in trades (cached per name)."""
+    if name not in _traded_cache:
+        try:
+            import trade_store
+            got = trade_store.received_from(name, False) + trade_store.received_from(name, True)
+        except Exception:
+            got = []
+        _traded_cache[name] = got
+    return _traded_cache[name]
+
+
+def search_pokedex(pokedex):
+    """Search all 905 Pokemon by name or number. Returns {"name", "no", "gen"} or None."""
+    import search
+    entries = []
+    for gen in range(1, 9):
+        try:
+            entries += [{"name": p, "no": dex_number(p), "gen": gen} for p in load_generation(gen)]
+        except SystemExit:
+            pass
+
+    def describe(e):
+        n = pokedex.get(e["name"], {}).get("normal", 0)
+        sh = pokedex.get(e["name"], {}).get("shiny", 0)
+        mark = (f"{GREEN}✔{RESET}" if n else f"{GREY}·{RESET}") + (f" {YELLOW}★{RESET}" if sh else "  ")
+        return f"{e['no']:03d}  {pretty(e['name'])[:16]:<16} {GREY}Gen {e['gen']}{RESET}  {mark}"
+
+    return search.search(entries, "SEARCH THE POKEDEX", describe, width=LIST_WIDTH,
+                         slots=("Search", "905 Pokemon"), status="Search")
+
+
+def settings_page():
+    """The settings page (press s on the Pokedex list). Every change is saved at
+    once and applies from the next terminal you open."""
+    import device, settings
+    values = settings.load()
+    W = 46
+    counts = {}
+    for g in settings.ALL_GENERATIONS:
+        try:
+            counts[g] = len(load_generation(g))
+        except SystemExit:
+            counts[g] = 0
+    toggles = [("system_details", "System details next to your catch",
+                ["SYSTEM DETAILS", "", "The OS, host, uptime", "and so on shown next to", "each new Pokemon.", "",
+                 "Turning it off also makes", "new terminals a little", "faster."]),
+               ("animations", "Trade animations",
+                ["TRADE ANIMATIONS", "", "The Poke Ball animations", "when a trade completes.", "",
+                 "Off: the trade finishes", "straight away."]),
+               ("update_check", "Daily update check",
+                ["UPDATE CHECK", "", "Once a day, check for a", "new poketerm version", "and tell you about it.", "",
+                 "Off: update when you", "like with", "poketerm --update"])]
+    rows = len(settings.ALL_GENERATIONS) + len(toggles)
+    cursor, note = 0, ""
+    while True:
+        lines = [f"{YELLOW}{BOLD}{'SETTINGS':^{W}}{RESET}", f"{GREY}{'─' * W}{RESET}",
+                 f"{YELLOW}Catch Pokemon from{RESET}"]
+        for i, g in enumerate(settings.ALL_GENERATIONS):
+            on = g in values["generations"]
+            box = f"{GREEN}[✔]{RESET}" if on else f"{GREY}[ ]{RESET}"
+            text = f"{box} Gen {g}  {REGIONS[g - 1]:<7} {GREY}{counts[g]} Pokemon{RESET}"
+            lines.append(row(text, i == cursor, W))
+        lines += ["", f"{YELLOW}Other{RESET}"]
+        for j, (key, label, _) in enumerate(toggles):
+            i = len(settings.ALL_GENERATIONS) + j
+            state = f"{GREEN}[On ]{RESET}" if values[key] else f"{RED}[Off]{RESET}"
+            lines.append(row(f"{state} {label}", i == cursor, W))
+        caught_from = len(values["generations"])
+        lines += ["", f"{GREY}Changes save straight away and apply from{RESET}",
+                  f"{GREY}the next terminal you open.{RESET}"]
+        if note:
+            lines += ["", note]
+        if cursor < len(settings.ALL_GENERATIONS):
+            g = settings.ALL_GENERATIONS[cursor]
+            info = [f"{BOLD}GENERATION {g}{RESET}", REGIONS[g - 1], "", f"{counts[g]} Pokemon", "",
+                    "New terminals catch", "from every generation", "that's ticked.", "",
+                    f"{caught_from} of 8 ticked"]
+        else:
+            info = toggles[cursor - len(settings.ALL_GENERATIONS)][2]
+        device.show(lines, width=W, info=info,
+                    keys=[("↑↓", "Move"), ("⏎", "Change"), ("a", "All gens"), ("b", "Back")],
+                    slots=("Settings", f"{caught_from}/8 gens"), lights=(True, False, True),
+                    status="Settings", title="Settings")
+        key = device.readkey()
+        if key is None:
+            continue
+        note = ""
+        if key == readchar.key.UP:
+            cursor = (cursor - 1) % rows
+        elif key == readchar.key.DOWN:
+            cursor = (cursor + 1) % rows
+        elif key in (readchar.key.ENTER, " "):
+            if cursor < len(settings.ALL_GENERATIONS):
+                g = settings.ALL_GENERATIONS[cursor]
+                if g in values["generations"]:
+                    if len(values["generations"]) == 1:
+                        note = f"{RED}At least one generation has to stay on.{RESET}"
+                        continue
+                    values["generations"] = [x for x in values["generations"] if x != g]
+                else:
+                    values["generations"] = sorted(values["generations"] + [g])
+            else:
+                key_name = toggles[cursor - len(settings.ALL_GENERATIONS)][0]
+                values[key_name] = not values[key_name]
+            settings.save(values)
+            note = f"{GREEN}✔ Saved{RESET}"
+        elif key == "a":
+            values["generations"] = list(settings.ALL_GENERATIONS)
+            settings.save(values)
+            note = f"{GREEN}✔ All 8 generations on{RESET}"
+        elif key in ("b", "q", "\x1b"):
+            return
+
+
+def row(text, selected, width):
+    """A settings row; the selected one is highlighted as a single bar."""
+    if not selected:
+        return f"  {text}"
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    return f"{INVERT}> {plain:<{width - 2}}{RESET}"
+
+
+def list_page_size():
+    import device
+    return max(3, device.screen_rows(LIST_WIDTH, MAX_PAGE + 4) - 4)
+
+
+def draw(gen, cursor, pkm_list, pokedex):
+    """The Pokedex list, on the device's screen. Returns the page size used."""
+    import device
+    page_size = list_page_size()
     total = len(pkm_list)
-    pages = (total + PAGE_SIZE - 1) // PAGE_SIZE
-    start = (page - 1) * PAGE_SIZE
-    end = min(start + PAGE_SIZE, total)
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = cursor // page_size + 1
+    start = (page - 1) * page_size
+    caught = sum(1 for p in pkm_list
+                 if pokedex.get(p, {}).get("normal", 0) > 0 or pokedex.get(p, {}).get("shiny", 0) > 0)
 
-    unique = sum(
-        1 for p in pkm_list
-        if pokedex.get(p, {}).get("normal", 0) > 0 or pokedex.get(p, {}).get("shiny", 0) > 0
-    )
+    W = min(LIST_WIDTH, device.available_width())
+    tight = W < 36                              # narrow window: single spaces between columns
+    gap, name_w = (" ", max(6, W - 19)) if tight else ("  ", 15)
+    filled = round(14 * caught / total) if total else 0
+    bar = f"{GREEN}{'█' * filled}{GREY}{'░' * (14 - filled)}{RESET}"
+    lines = [
+        f"{YELLOW}{BOLD}{f'GENERATION {gen} POKEDEX':^{W}}{RESET}",
+        f" {GREEN if caught else RED}Caught {caught}/{total}{RESET}  {bar} {round(100 * caught / total) if total else 0}%",
+        f"{GREY}{'─' * W}{RESET}",
+        f"{GREY} No.{gap}{'Pokemon':<{name_w}}{gap}Normal{gap}Shiny{RESET}" if not tight
+        else f"{GREY} No. {'Pokemon':<{name_w}} Norm.  Shiny{RESET}",
+    ]
+    for idx in range(start, start + page_size):
+        if idx >= total:
+            lines.append("")
+            continue
+        p = pkm_list[idx]
+        n = pokedex.get(p, {}).get("normal", 0)
+        sh = pokedex.get(p, {}).get("shiny", 0)
+        ncell = f"{GREEN}✔{RESET} {n:<4}" if n else f"{RED}✖{RESET} {n:<4}"
+        scell = f"{YELLOW}★{RESET} {sh:<4}" if sh else f"{RED}✖{RESET} {sh:<4}"
+        row = (f" {dex_number(p):03d}{gap}{pretty(p)[:name_w]:<{name_w}}{gap}{ncell}{' ' if tight else '   '}{scell}")
+        if idx == cursor:
+            plain = re.sub(r"\x1b\[[0-9;]*m", "", row)
+            row = f"{INVERT}{plain:<{W}}{RESET}"
+        lines.append(row)
 
-    print(f"{RED}┌{'─'*BOX_WIDTH}┐{RESET}")
-    title = f"Generation {gen} Pokedex"
-    pad = (BOX_WIDTH - len(title)) // 2
-    print(f"{RED}│{RESET}{' '*pad}{YELLOW}{title}{RESET}{' '*(BOX_WIDTH-len(title)-pad)}{RED}│{RESET}")
-    print(f"{RED}├{'─'*BOX_WIDTH}┤{RESET}")
+    # The selected Pokemon, on the green display
+    sel = pkm_list[cursor]
+    n = pokedex.get(sel, {}).get("normal", 0)
+    sh = pokedex.get(sel, {}).get("shiny", 0)
+    info = [f"No. {dex_number(sel):03d}", f"{BOLD}{pretty(sel).upper()}{RESET}", ""]
+    if n or sh:
+        info += [f"Normal  {'✔' if n else '✖'} {n}", f"Shiny   {'★' if sh else '✖'} {sh}"]
+        trades = traded_from(sel)
+        if trades:
+            info += ["", f"Traded: from {trades[0]['peer']}"]
+    else:
+        info += ["Not caught yet", "", "Keep opening terminals", "to find one!"]
+    keys = [("↑↓", "Move"), ("←→", "Page"), ("⏎", "Entry"), ("/", "Search"), ("s", "Settings"),
+            ("p", "Trainer"), ("h", "History"), ("a", "Awards"), ("t", "Trade"), ("q", "Quit")]
+    device.show(lines, width=W, info=info, keys=keys,
+                slots=(f"Gen {gen}", f"Page {page}/{pages}"),
+                lights=(True, sh > 0, n > 0 or sh > 0),
+                status=f"{caught}/{total} caught", title=f"Generation {gen}")
+    return page_size
 
-    caught = f"Pokemon Caught: {unique}/{total}"
-    pad = (BOX_WIDTH - len(caught)) // 2
-    print(f"│{' '*pad}{GREEN if unique else RED}{caught}{RESET}{' '*(BOX_WIDTH-len(caught)-pad)}│")
-
-    print("│ ----------------------------------- │")
-    print("│ Pokemon     Normal  Shiny           │")
-    print("│ ----------------------------------- │")
-
-    max_name_len = max(len(pkm) for pkm in pkm_list)
-    col1_width = max(max_name_len, 10)
-
-    rows_printed = 0
-    for i, pkm in enumerate(pkm_list[start:end]):
-        idx = start + i
-        sel = INVERT if idx == cursor else ""
-
-        n = pokedex.get(pkm, {}).get("normal", 0)
-        s = pokedex.get(pkm, {}).get("shiny", 0)
-
-        ncell = count_cell("✔", GREEN, n) if n > 0 else count_cell("✖", RED, n)
-        scell = count_cell("✔", YELLOW, s) if s > 0 else count_cell("✖", RED, s)
-
-        row = f"{pkm:<{col1_width}}   {ncell}   {scell}"
-        print(f"{sel}│ {row:<{BOX_WIDTH+16}} │{RESET}")
-        rows_printed += 1
-
-    for _ in range(PAGE_SIZE - rows_printed):
-        print(f"│ {' '*(BOX_WIDTH-2)} │")
-
-    print("│ ----------------------------------- │")
-    footer = f"Page {page}/{pages} (↑↓ ←→ Enter p a t q)"
-    print(f"│ {footer:<{BOX_WIDTH-2}} │")
-    print(f"{RED}└{'─'*BOX_WIDTH}┘{RESET}")
-    sys.stdout.write("\033[J")
-    sys.stdout.flush()
-
-def draw_details(name, has_normal, has_shiny):
+def draw_details(name, has_normal, has_shiny, showcase=False):
+    """A Pokemon's Pokedex entry. Normally it shows the ones you've caught, each
+    with its story. `showcase` (the trainer profile's favourites) shows the
+    species itself instead: its normal and shiny looks, type and stats."""
     def handle_resize(signum, frame): pass
     signal.signal(signal.SIGWINCH, handle_resize)
 
@@ -198,10 +394,14 @@ def draw_details(name, has_normal, has_shiny):
             }
             cache_file.write_text(json.dumps(data))
         except Exception:
-            clear()
-            print(f"{RED}Failed to fetch Pokemon data.{RESET}")
-            readchar.readkey()
-            return
+            import device
+            while True:
+                device.show(["", f"{RED}{'Couldn' + chr(39) + 't load this Pokemon' + chr(39) + 's data.':^40}{RESET}", "",
+                             f"{'Check your internet connection':^40}", f"{'and try again.':^40}"],
+                            width=40, info=[f"{BOLD}{pretty(name).upper()}{RESET}", "", "No data yet"],
+                            keys=[("any", "Back")], lights=(True, False, False), status="Offline?")
+                if device.readkey() is not None:
+                    return
 
     pid = data["id"]
     types = "/".join(t.replace("-", " ").title() for t in sorted(data["types"]))
@@ -209,111 +409,162 @@ def draw_details(name, has_normal, has_shiny):
     weight = data["weight"]
     stats = [(s[0].replace("-", " ").title(), s[1]) for s in data["stats"]]
 
-    sprites = {"normal": [], "shiny": []}
-    for variant in ("normal", "shiny"):
-        owned = has_normal if variant == "normal" else has_shiny
-        if not owned: continue
-        cache_sprite = CACHE_DIR / f"sprite_data/{name.lower()}_{variant}.txt"
-        if cache_sprite.exists():
-            sprites[variant] = cache_sprite.read_text().splitlines()
+    # Sprites exactly as a new terminal shows them (from colorscripts, trimmed).
+    import trade_ui
+    sprites = {variant: trade_ui.get_sprite({"name": name, "shiny": variant == "shiny"})
+               for variant, owned in (("normal", has_normal), ("shiny", has_shiny)) if owned}
+
+    # Your Pokemon of this kind, each with its own story.
+    try:
+        import collection, trade_store
+        if showcase:
+            yours = []
         else:
-            try:
-                args = [colorscripts_cmd(), "--no-title", "-n", name]
-                if variant == "shiny": args.insert(2, "-s")
-                sprites[variant] = subprocess.check_output(args, stderr=subprocess.DEVNULL, text=True).splitlines()
-                cache_sprite.write_text("\n".join(sprites[variant]))
-            except Exception:
-                sprites[variant] = []
+            with trade_store.pokedex_lock():
+                yours = collection.of_kind(name)
+    except Exception:
+        collection, yours = None, []          # the story is a bonus: never break this page
+    # Normal and shiny ones are browsed separately; each starts at number 1.
+    groups = {"normal": [r for r in yours if not r.get("shiny")], "shiny": [r for r in yours if r.get("shiny")]}
+    if not groups[current] and groups["shiny" if current == "normal" else "normal"]:
+        current = "shiny" if current == "normal" else "normal"
+    picks = {"normal": 0, "shiny": 0}
 
-    box_width = 80
-    inner = box_width - 2
+    import device
+    # PokeAPI gives height in decimetres and weight in hectograms.
+    facts = [f"{BOLD}TYPE{RESET}    {types}", f"{BOLD}REGION{RESET}  {home_region(name)}",
+             f"{BOLD}HEIGHT{RESET}  {height / 10:g} m", f"{BOLD}WEIGHT{RESET}  {weight / 10:g} kg",
+             "", f"{BOLD}BASE STATS{RESET}"]
+    short = {"Hp": "HP", "Attack": "ATK", "Defense": "DEF", "Special Attack": "SP.ATK",
+             "Special Defense": "SP.DEF", "Speed": "SPEED"}
+    for stat, val in stats:
+        # A gauge per stat: 12 cells against the maximum (255), the filled part
+        # coloured by how strong it is, the rest a faint track. "▆" leaves a gap
+        # above each bar so the six don't merge into one block.
+        filled = max(1, min(12, round(val / 255 * 12)))
+        colour = "\033[38;5;160m" if val < 50 else "\033[38;5;178m" if val < 90 else "\033[38;5;28m"
+        track = "\033[38;5;108m"
+        bar = f"{colour}{'▆' * filled}{track}{'▆' * (12 - filled)}{RESET}"
+        facts.append(f"{short.get(stat, stat[:6]):<7}{val:>4} {bar}")
 
-    # Trades this Pokemon came from, per variant (shown under the sprite label).
-    traded = {}
-    for variant in ("normal", "shiny"):
-        try:
-            import trade_store
-            traded[variant] = trade_store.received_from(name, variant == "shiny")
-        except Exception:
-            traded[variant] = []      # trade history is optional: never break this page
-
-    def hr(): print(f"{RED}┌{'─'*inner}┐{RESET}")
-    def mid(): print(f"{RED}├{'─'*inner}┤{RESET}")
+    def story(rec, W):
+        """Lines about one of your Pokemon (it may be from before 0.0.8)."""
+        title = pretty(name)
+        kind = f"{YELLOW}★ Shiny{RESET}" if rec.get("shiny") else "Normal"
+        out = []
+        if rec.get("legacy") and not rec.get("caught_at"):
+            out.append(f"{GREY}Caught before poketerm 0.0.8{RESET}")
+        else:
+            nature = f"{rec['nature']} nature" if rec.get("nature") else f"{GREY}nature unknown{RESET}"
+            out.append(f"{kind} · {nature}")
+            when = collection.when_text(rec.get("caught_at"))
+            if when:
+                out.append(f"Caught {when} ({collection.time_of_day(rec['caught_at'])})")
+            else:
+                out.append(f"{GREY}Date caught unknown{RESET}")
+            who, no = rec.get("original_trainer"), rec.get("catch_no")
+            by = f"Caught by {who}" if who else f"{GREY}Original trainer unknown{RESET}"
+            if rec.get("met_level") is not None:
+                by += f" · met at Lv {rec['met_level']}"
+            out.append(by)
+            mine = not rec.get("history")
+            if mine and no == 1:
+                out.append(f"{GREEN}Your very first {title}!{RESET}")
+            elif mine and no:
+                out.append(f"Your {collection.ordinal(no)} {title}")
+            elif no:
+                out.append(f"{GREY}Their {collection.ordinal(no)} {title}{RESET}")
+        for hop in (rec.get("history") or [])[-1:]:
+            earlier = len(rec["history"]) - 1
+            more = f" {GREY}(+{earlier} earlier trade{'s' if earlier != 1 else ''}){RESET}" if earlier else ""
+            out.append(f"{GREEN}Traded: received from {hop.get('from')} on "
+                       f"{collection.date_text(hop.get('date'))}{RESET}{more}")
+        return out
 
     try:
         sys.stdout.write("\033[?7l")
-        
-        clear() 
-
+        clear()
         while True:
-            sys.stdout.write("\033[H")
-            
-            hr()
-            title = " Pokedex Entry "
-            pad = (inner - len(title)) // 2
-            print(f"{RED}│{RESET}{' '*pad}{YELLOW}{title}{RESET}{' '*(inner-len(title)-pad)}{RED}│{RESET}")
-            mid()
+            group = groups[current]
+            pick = min(picks[current], max(0, len(group) - 1))
+            rec = group[pick] if group else None
+            other = "shiny" if current == "normal" else "normal"
+            sprite = sprites.get(current)
+            if sprite is None:
+                sprite = sprites[current] = trade_ui.get_sprite({"name": name, "shiny": current == "shiny"})
+            sprite_w = max([device.visible_width(l) for l in sprite] + [0])
+            W = min(max(46, sprite_w + 4), device.available_width())    # narrow window: narrow screen
+            label = "★ SHINY" if current == "shiny" else "NORMAL"
 
-            name_line = f"No. {pid} / {name.title()}"
-            pad = (inner - len(name_line)) // 2
-            print(f"{RED}│{RESET}{' '*pad}{YELLOW}{name_line}{RESET}{' '*(inner-len(name_line)-pad)}{RED}│{RESET}")
-            mid()
-
-            sprite_label = f"Sprite: {current.title()}"
-            pad = (inner - len(sprite_label)) // 2
-            print(f"{RED}│{RESET}{' '*pad}{YELLOW}{sprite_label}{RESET}{' '*(inner-len(sprite_label)-pad)}{RED}│{RESET}")
-            received = traded.get(current) or []
-            if received:
-                latest = received[0]
-                try:
-                    from datetime import date as _date
-                    d = _date.fromisoformat(latest["date"])
-                    when = f"{d.day} {d.strftime('%b %Y')}"
-                except (ValueError, KeyError):
-                    when = latest.get("date", "")
-                if len(received) == 1:
-                    line = f"Traded: received from {latest['peer']} on {when}"
-                else:
-                    line = f"Traded: received in {len(received)} trades, latest from {latest['peer']} on {when}"
-                line = line[:inner]
-                pad = (inner - len(line)) // 2
-                print(f"{RED}│{RESET}{' '*pad}{GREEN}{line}{RESET}{' '*(inner-len(line)-pad)}{RED}│{RESET}")
-            mid()
-
-            for line in sprites.get(current, []):
-                plain = strip_ansi(line)
-                vis = len(plain)
-                pad_total = inner - vis
-                left = pad_total // 2
-                right = pad_total - left
-                print(f"{RED}│{RESET}{' '*left}{line}{' '*right}{RED}│{RESET}")
-
-            mid()
-            print(f"{RED}│{RESET} {GREEN}Type(s):{RESET} {types:<{inner-10}}{RED}│{RESET}")
-            print(f"{RED}│{RESET} {GREEN}Height:{RESET}  {height:<{inner-10}}{RED}│{RESET}")
-            print(f"{RED}│{RESET} {GREEN}Weight:{RESET}  {weight:<{inner-10}}{RED}│{RESET}")
-            print(f"{RED}│{RESET} {GREEN}Base Stats:{RESET}{' '*(inner-12)}{RED}│{RESET}")
-
-            for stat, val in stats:
-                line = f"  * {GREEN}{stat}:{RESET} {val}"
-                pad = inner - len(strip_ansi(line)) - 1
-                print(f"{RED}│{RESET} {line}{' '*pad}{RED}│{RESET}")
-
-            print(f"{RED}└{'─'*inner}┘{RESET}")
-    
-            sys.stdout.write("\033[J")
-            sys.stdout.flush()
-
-            if has_normal and has_shiny:
-                print("\nUse ←/→ to toggle normal/shiny, any other key to return…", end="", flush=True)
-                key = readchar.readkey()
-                if key in (readchar.key.LEFT, readchar.key.RIGHT):
-                    current = "normal" if current == "shiny" else "shiny"
-                else: 
-                    break
+            below = [f"{GREY}{'─' * W}{RESET}"]
+            if showcase:
+                below = []
+            elif rec:
+                n = len(group)
+                count = f"{pick + 1} of {n} {current}" + ("  ◀ ▶" if n > 1 else "")
+                heart = f"{RED}♥{RESET} " if rec.get("favourite") else ""
+                title_text = (f'"{rec["nickname"]}" {GREY}the {pretty(name)}{RESET}' if rec.get("nickname")
+                              else f"YOUR {pretty(name).upper()}")
+                below.append(f"{heart}{YELLOW}{BOLD}{title_text}{RESET}  {GREY}{count}{RESET}")
+                below += story(rec, W)
+                if rec.get("favourite"):
+                    below.append(f"{RED}♥ Favourite{RESET} {GREY}- protected from trading{RESET}")
+                if groups[other]:
+                    below.append(f"{GREY}You also have {len(groups[other])} {other} - press s{RESET}")
             else:
-                print("\nPress any key to return…", end="", flush=True)
-                readchar.readkey()
+                below.append(f"{GREY}You don't have a {pretty(name)} right now.{RESET}")
+
+            if showcase:
+                keys = [("←→", other.title()), ("b", "Back")]
+            else:
+                keys = ([("←→", "Next")] if len(group) > 1 else [])
+            if groups[other] and not showcase:
+                keys.append(("s", other.title()))
+            if rec and not showcase:
+                keys += [("n", "Nickname"), ("f", "Unfav" if rec.get("favourite") else "Fav")]
+            if not showcase:
+                keys += [("b", "Back")]
+
+            # The sprite only if the window has room for it and the story:
+            # nothing important may scroll off a small window.
+            header = [f"{YELLOW}{BOLD}{f'No. {pid:03d}  {name.replace(chr(45), chr(32)).upper()}':^{W}}{RESET}",
+                      f"{GREY}{label:^{W}}{RESET}", ""]
+            room = device.fit_rows(W, facts, keys) - len(header) - len(below)
+            if sprite and len(sprite) <= room and sprite_w <= W:
+                pad = (W - sprite_w) // 2
+                art = [" " * pad + l for l in sprite]
+            elif sprite:
+                which = "wider" if sprite_w > W else "taller"     # never draw part of a Pokemon
+                art = [f"{GREY}(make the window {which} to see the sprite){RESET}"]
+            else:
+                art = [f"{GREY}{'(no sprite available)':^{W}}{RESET}"]
+            lines = header + art + below
+
+            nature = (rec or {}).get("nature") or ""
+            device.show(lines, width=W, info=facts, keys=keys,
+                        slots=(f"No. {pid:03d}", (nature or f"{pick + 1} of {len(group)}") if rec else current.title()),
+                        lights=(True, current == "shiny", bool(rec)),
+                        status=pretty(name), title=f"No. {pid} {pretty(name)}", info_on_screen=True)
+
+            key = device.readkey()
+            if key is None:
+                continue                      # window resized: redraw to fit
+            if showcase:
+                if key in (readchar.key.LEFT, readchar.key.RIGHT, "s"):
+                    current = other           # normal <-> shiny
+                    continue
+                break
+            if len(group) > 1 and key in (readchar.key.LEFT, readchar.key.RIGHT, readchar.key.UP, readchar.key.DOWN):
+                step = 1 if key in (readchar.key.RIGHT, readchar.key.DOWN) else -1
+                picks[current] = (pick + step) % len(group)
+            elif key == "s" and groups[other]:
+                current = other
+            elif rec and key == "f":
+                collection.set_favourite(rec["id"], not rec.get("favourite"))
+                group[pick] = dict(rec, favourite=not rec.get("favourite"))
+            elif rec and key == "n":
+                group[pick] = dict(rec, nickname=ask_nickname(rec, name))
+            else:
                 break
     finally:
         sys.stdout.write("\033[?7h")
@@ -334,7 +585,10 @@ def print_help():
     {GREEN}↑/↓{RESET}           Move the cursor up and down.
     {GREEN}←/→{RESET}           Change pages quickly.
     {GREEN}Enter{RESET}         View detailed stats and sprites (if caught).
+    {GREEN}/{RESET}             Search for a Pokemon by name or number (any generation).
+    {GREEN}s{RESET}             Settings: generations to catch from, system details, animations, update check.
     {GREEN}p{RESET}             View trainer profile and overall progression.
+    {GREEN}h{RESET}             Catch history: first, latest and rarest catch, busiest day, time of day.
     {GREEN}a{RESET}             View achievements.
     {GREEN}t{RESET}             Trade Pokemon with a trainer on your local network.
     {GREEN}q{RESET}             Exit the Pokedex.
@@ -358,13 +612,17 @@ def main():
     
     pkm_list = load_generation(gen)
     pokedex = load_pokedex()
-    page, cursor = 1, 0
+    cursor = 0
 
     hide_cursor()
     try:
         while True:
-            draw(gen, page, cursor, pkm_list, pokedex)
-            key = readchar.readkey()
+            page_size = draw(gen, cursor, pkm_list, pokedex)
+            import device
+            key = device.readkey()
+            if key is None:
+                continue                      # window resized: redraw to fit
+            last = len(pkm_list) - 1
 
             if key == "q": break
             elif key == "p": 
@@ -378,20 +636,31 @@ def main():
                 clear()
                 trade_ui.open_trade_page()
                 pokedex = load_pokedex()      # trades change what you own
+                _traded_cache.clear()
                 clear()
                 trade_ui.debug("pokedex: list redrawn")
+            elif key == "s":
+                settings_page()
+                clear()
+            elif key == "h":
+                import catch_history
+                catch_history.history_page()
+                clear()
+            elif key == "/":
+                found = search_pokedex(pokedex)
+                if found:
+                    if found["gen"] != gen:            # it's in another generation: go there
+                        gen, pkm_list = found["gen"], load_generation(found["gen"])
+                    cursor = pkm_list.index(found["name"])
+                clear()
             elif key == readchar.key.UP:
                 cursor = max(0, cursor - 1)
-                if cursor < (page - 1) * PAGE_SIZE: page -= 1
             elif key == readchar.key.DOWN:
-                cursor = min(len(pkm_list) - 1, cursor + 1)
-                if cursor >= page * PAGE_SIZE: page += 1
+                cursor = min(last, cursor + 1)
             elif key == readchar.key.RIGHT:
-                page = min(page + 1, (len(pkm_list)-1)//PAGE_SIZE + 1)
-                cursor = (page - 1) * PAGE_SIZE
+                cursor = min(last, (cursor // page_size + 1) * page_size)
             elif key == readchar.key.LEFT:
-                page = max(1, page - 1)
-                cursor = (page - 1) * PAGE_SIZE
+                cursor = max(0, (cursor // page_size - 1) * page_size)
             elif key == readchar.key.ENTER:
                 pkm = pkm_list[cursor]
                 n = pokedex.get(pkm, {}).get("normal", 0)
@@ -401,11 +670,14 @@ def main():
                     draw_details(pkm, n > 0, s > 0)
                     clear()
                 else:
-                    clear()
-                    print(f"{RED}You must catch a normal or shiny version to view more information!{RESET}")
-                    print("\nPress any key to return…")
-                    readchar.readkey()
-                    clear()
+                    import device
+                    device.show(["", f"{RED}{'Not caught yet!':^40}{RESET}", "",
+                                 f"{'Catch a normal or shiny one to':^40}", f"{'see its Pokedex entry.':^40}"],
+                                width=40, info=[f"No. {dex_number(pkm):03d}", f"{BOLD}{pretty(pkm).upper()}{RESET}",
+                                                "", "Not caught yet"],
+                                keys=[("any", "Back")], slots=(f"Gen {gen}", ""), lights=(True, False, False),
+                                status="Keep catching!")
+                    device.readkey()
     finally:
         show_cursor()
         print(RESET)

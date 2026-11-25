@@ -51,7 +51,6 @@ if [[ "$ZSHRC" == /private/tmp/* && -z "${POKETERM_ZSHRC:-}" ]]; then
 fi
 
 MODE=install          # install | update | uninstall
-DEV=false
 GEN=""
 LOG_FILE=""
 
@@ -65,7 +64,6 @@ Usage: ./install.sh [--install|--update|--uninstall] [OPTIONS]
   --update           Update an existing install, keeping all progress
   --uninstall        Remove poketerm and its data
   --gen N|N-M        Only catch Pokemon from generation N (or N to M), 1-8
-  --dev              Developer mode: link to this checkout so edits are live
   --zshrc PATH       Use a different zshrc file
   -h, --help         Show this help
 
@@ -94,7 +92,7 @@ while [[ $# -gt 0 ]]; do
         --install|--setup)     MODE=install; shift ;;
         --update|--upgrade)    MODE=update; shift ;;
         --uninstall|--remove)  MODE=uninstall; shift ;;
-        --dev)                 DEV=true; shift ;;
+        --dev)                 echo "--dev was removed. To try this checkout, run: poketerm --update --from ."; exit 1 ;;
         --zshrc)
             [[ $# -ge 2 ]] || { echo "Error: --zshrc needs a path"; exit 1; }
             ZSHRC="$2"
@@ -249,7 +247,7 @@ backup_progress() {
     stamp="$(date +%Y%m%d-%H%M%S)"
     dest="$APP_DIR/backups/$stamp-$(installed_version)"
     run mkdir -p "$dest"
-    for f in pokedex.txt pokedex.txt.sha256 trainer.json; do
+    for f in pokedex.txt pokedex.txt.sha256 trainer.json pokemon.log settings.conf; do
         [[ -f "$APP_DIR/$f" ]] && run cp -p "$APP_DIR/$f" "$dest/$f"
     done
     # Trading identity, history and trainers met. -p keeps the private key 0600.
@@ -314,14 +312,10 @@ install_code() {
         [[ -f "$path" ]] || continue
         [[ "$name" == "trainer.json" ]] && continue
         code_files+=("$name")
-        if [[ "$DEV" == true ]]; then
-            run ln -s "$path" "$STAGE_DIR/new/$name"
-        else
-            run cp -p "$path" "$STAGE_DIR/new/$name"
-        fi
+        run cp -p "$path" "$STAGE_DIR/new/$name"
     done
     [[ ${#code_files[@]} -gt 0 ]] || { echo "No code files found in $src" >>"$LOG_FILE"; false; }
-    [[ "$DEV" == true ]] || run chmod +x "$STAGE_DIR/new/poketerm" "$STAGE_DIR/new/pokedex" "$STAGE_DIR/new/pokedex.py" "$STAGE_DIR/new/update.sh"
+    run chmod +x "$STAGE_DIR/new/poketerm" "$STAGE_DIR/new/pokedex" "$STAGE_DIR/new/pokedex.py" "$STAGE_DIR/new/update.sh"
     ok
 
     step "Installing poketerm $VERSION"
@@ -349,6 +343,9 @@ install_code() {
     run cp -R "$REPO_ROOT/files/gen_files" "$APP_DIR/"
     run mkdir -p "$APP_DIR/cache"
     run cp -R "$REPO_ROOT/files/cache/." "$APP_DIR/cache/"
+    # Sprites used to be shipped here too; they're drawn by colorscripts now, so
+    # remove the old copy from earlier installs (about 18 MB).
+    [[ -n "$APP_DIR" && -d "$APP_DIR/cache/sprite_data" ]] && run rm -rf -- "$APP_DIR/cache/sprite_data"
     find "$APP_DIR" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
 
     SWAPPED_FILES=()   # committed; nothing to roll back past this point
@@ -661,18 +658,13 @@ install_pokemon_colorscripts() {
 }
 
 write_install_info() {
-    if [[ "$DEV" == true ]]; then
-        printf '%s+dev\n' "$VERSION" > "$APP_DIR/VERSION"
-    else
-        printf '%s\n' "$VERSION" > "$APP_DIR/VERSION"
-    fi
+    printf '%s\n' "$VERSION" > "$APP_DIR/VERSION"
 
     # Read by `poketerm --update` so updates land in the same place.
     {
         printf 'BIN_DIR=%s\n' "$BIN_DIR"
         printf 'ZSHRC=%s\n' "$ZSHRC"
-        printf 'MODE=%s\n' "$([[ "$DEV" == true ]] && echo dev || echo release)"
-        [[ "$DEV" == true ]] && printf 'SOURCE=%s\n' "$REPO_ROOT"
+        printf 'MODE=release\n'
     } > "$APP_DIR/install.conf"
 
     # Clear any cached "update available" notice.
@@ -729,19 +721,39 @@ hook_line() {
     grep -nxF "$ZSHRC_MARKER_BEGIN" "$ZSHRC" 2>/dev/null | head -n 1 | cut -d: -f1
 }
 
+# Generations now live in settings.conf (changed in the Pokedex: press s), not
+# in the zshrc hook. $1 = N or N-M; $2 = "keep" to leave a choice already made
+# on the settings page alone (used when moving an old hook's --gen across).
+save_generations_setting() {
+    local gen="$1" start end list="" g file="$APP_DIR/settings.conf"
+    IFS=- read -r start end <<< "$gen"
+    end="${end:-$start}"
+    for (( g = start; g <= end; g++ )); do list="${list:+$list,}$g"; done
+    [[ -n "$list" ]] || return 0
+    if [[ "${2:-}" == keep ]] && grep -q '^generations=' "$file" 2>/dev/null; then
+        return 0
+    fi
+    { grep -v '^generations=' "$file" 2>/dev/null || true; printf 'generations=%s\n' "$list"; } > "$file.tmp" \
+        && mv -f "$file.tmp" "$file"
+}
+
 ensure_zshrc_hook() {
-    # On update, keep the user's existing hook (and their --gen choice) unless
-    # a new --gen was given, it's from an old version, or it sits below
-    # Powerlevel10k's instant prompt.
+    # On update, keep the user's existing hook unless a new --gen was given,
+    # it's from an old version, it sits below Powerlevel10k's instant prompt,
+    # or it still carries --gen (that choice now lives in the settings).
+    if [[ -n "$GEN" ]]; then
+        save_generations_setting "$GEN"
+    fi
     if has_hook && [[ -z "$GEN" ]]; then
-        local block p10k_at
+        local block p10k_at old_gen
         block="$(hook_block)"
         p10k_at="$(p10k_insert_line)"
-        if grep -q '^export PATH=' <<< "$block" \
+        old_gen="$(sed -nE 's/.*poketerm --gen ([0-9]+(-[0-9]+)?).*/\1/p' <<< "$block" | head -n 1)"
+        if grep -q '^export PATH=' <<< "$block" && [[ -z "$old_gen" ]] \
            && { [[ -z "$p10k_at" ]] || (( $(hook_line) < p10k_at )); }; then
             return 0
         fi
-        GEN="$(sed -nE 's/.*poketerm --gen ([0-9]+(-[0-9]+)?).*/\1/p' <<< "$block" | head -n 1)"
+        [[ -n "$old_gen" ]] && save_generations_setting "$old_gen" keep
     fi
 
     step "Adding poketerm to $ZSHRC"
@@ -760,11 +772,7 @@ ensure_zshrc_hook() {
         printf '%s\n' "$ZSHRC_MARKER_BEGIN"
         printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
         printf 'if command -v poketerm >/dev/null 2>&1; then\n'
-        if [[ -n "$GEN" ]]; then
-            printf '  poketerm --gen %s\n' "$GEN"
-        else
-            printf '  poketerm\n'
-        fi
+        printf '  poketerm\n'        # generations are in settings.conf
         printf 'fi\n'
         printf '%s\n' "$ZSHRC_MARKER_END"
     } > "$hook_file"
@@ -804,7 +812,7 @@ do_install() {
     elif [[ "$first_install" == true ]]; then
         echo "Installing Poketerm $VERSION"
     else
-        echo "Updating Poketerm ${previous} -> ${VERSION}$([[ "$DEV" == true ]] && echo " (dev mode)")"
+        echo "Updating Poketerm ${previous} -> ${VERSION}"
     fi
 
     LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/poketerm-install.XXXXXX")"
@@ -835,9 +843,6 @@ do_install() {
         else
             echo "Open a new terminal (or run: source $ZSHRC) to see it."
         fi
-    fi
-    if [[ "$DEV" == true ]]; then
-        echo "Dev mode: code is linked to $REPO_ROOT/files/current - edits apply to the next terminal."
     fi
 }
 

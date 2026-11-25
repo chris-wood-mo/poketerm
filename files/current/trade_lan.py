@@ -289,7 +289,8 @@ def network_interfaces():
     found = []
     try:
         if sys.platform == "darwin" or not shutil.which("ip"):
-            out = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=5).stdout
+            ifconfig = shutil.which("ifconfig") or "/sbin/ifconfig"     # /sbin isn't always on PATH
+            out = subprocess.run([ifconfig], capture_output=True, text=True, timeout=5).stdout
             name = None
             for line in out.splitlines():
                 m = re.match(r"^(\S+?):? flags=", line)

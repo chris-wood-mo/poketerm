@@ -114,13 +114,24 @@ def _bad():
     raise ProtocolError("malformed message")
 
 
+def _details(v):
+    """A traded Pokemon's story (dates, nature, trainers). Only its size and
+    shape are checked here; collection.clean_details() checks every field
+    before anything is stored or shown."""
+    if v is None:
+        return None
+    if not isinstance(v, dict) or len(canonical(v)) > 4096:
+        _bad()
+    return v
+
+
 SCHEMAS = {
     "hello":    {"name": _str(64), "purpose": lambda v: v if v in ("trade", "resolve") else _bad(),
                  "commit": _hex64, "nonce": _nonce, "trades_left": _int(0, store.DAILY_LIMIT),
                  "offer": _opt_pokemon},
     "reveal":   {"nonce": _nonce},
     "answer":   {"accept": _bool, "reason": _str(80)},
-    "offer":    {"pokemon": _opt_pokemon},
+    "offer":    {"pokemon": _opt_pokemon, "details": _details},
     "confirm":  {"trade_id": _hex64, "signature": _str(512)},
     "ready":    {"trade_id": _hex64},
     "done":     {"trade_id": _hex64},
@@ -128,7 +139,7 @@ SCHEMAS = {
     "resolve":  {"trade_id": _hex64, "state": _state},
     "bye":      {"reason": _str(80)},
 }
-OPTIONAL = {"hello": {"commit", "nonce", "offer"}}
+OPTIONAL = {"hello": {"commit", "nonce", "offer"}, "offer": {"details"}}
 
 
 class Validator:
@@ -200,6 +211,8 @@ class TradeSession:
         self.session_id = None
         self.my_offer = my_offer
         self.peer_offer = None
+        self.my_details = None          # the exact Pokemon offered (collection record)
+        self.peer_details = None        # the other trainer's, as they sent it (unchecked)
         self.my_sig = None
         self.peer_sig = None
         self.terms = None
@@ -328,19 +341,27 @@ class TradeSession:
             self.error = "You declined the trade."
         self._emit("failed", self.error)
 
-    def set_offer(self, pokemon):
-        """Choose (or change) the Pokemon to give. Clears both confirmations."""
+    def set_offer(self, pokemon, details=None):
+        """Choose (or change) the Pokemon to give - `details` is the exact one
+        (its collection record). Clears both confirmations."""
         with self.lock:
             if self.phase not in ("choosing", "waiting") or self.my_sig:
                 return False        # after confirming, the only way out is cancel()
             self.my_offer = {"name": pokemon["name"], "shiny": bool(pokemon["shiny"])}
+            self.my_details = details
             self.my_sig = self.peer_sig = None
             self.terms = None
             if self.phase == "choosing":
-                self._send("offer", pokemon=self.my_offer)
+                self._send_offer()
             self.last_activity = time.monotonic()
         self._emit("changed")
         return True
+
+    def _send_offer(self):
+        fields = {"pokemon": self.my_offer}
+        if self.my_details:
+            fields["details"] = self.my_details
+        self._send("offer", **fields)
 
     def confirm(self):
         """Sign the current terms. When both have signed, the trade runs."""
@@ -378,7 +399,8 @@ class TradeSession:
         with self.lock:
             return {k: getattr(self, k) for k in (
                 "phase", "role", "peer_name", "peer_fp", "peer_trades_left", "code", "my_offer",
-                "peer_offer", "my_sig", "peer_sig", "prepared", "ready_sent", "committed", "result", "error")}
+                "peer_offer", "my_sig", "peer_sig", "prepared", "ready_sent", "committed", "result", "error",
+                "my_details", "peer_details")}
 
     # -- incoming ----------------------------------------------------------
     def _handle(self, raw):
@@ -395,7 +417,7 @@ class TradeSession:
             if msg["accept"]:
                 self.phase = "choosing"
                 if self.my_offer:
-                    self._send("offer", pokemon=self.my_offer)
+                    self._send_offer()
                 self._emit("changed")
             else:
                 self._fail_locally(f"{self.peer_name} declined the trade.", notify=False)
@@ -405,6 +427,7 @@ class TradeSession:
             if self.phase != "choosing" or self.peer_sig:
                 raise ProtocolError("the other trainer changed their offer after confirming")
             self.peer_offer = msg["pokemon"]
+            self.peer_details = msg.get("details")
             self.my_sig = self.peer_sig = None
             self.terms = None
             self._emit("changed")
@@ -458,7 +481,9 @@ class TradeSession:
         try:
             store.prepare(terms["trade_id"], give=self.my_offer, receive=self.peer_offer,
                           peer={"name": self.peer_name, "fingerprint": self.peer_fp},
-                          terms=terms, signatures=sigs)
+                          terms=terms, signatures=sigs,
+                          give_id=(self.my_details or {}).get("id"),
+                          receive_details=self.peer_details, me=self.my_name)
         except store.TradeError as e:
             store.abort(terms["trade_id"], str(e))
             try:

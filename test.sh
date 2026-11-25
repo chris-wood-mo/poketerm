@@ -94,6 +94,10 @@ check "trainer profile seeded"     test -s "$APP/trainer.json"
 eq    "VERSION written"            "$(cat "$APP/VERSION")" "$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
 
 # -----------------------------------------------------------------------------
+installer --dev
+check "--dev is gone and says what to use instead" grep -q "poketerm --update --from" "$SANDBOX/install.log"
+check "...and the install is a plain copy (no links to the checkout)" bash -c '[[ -z "$(find "$1" -maxdepth 1 -type l)" ]]' _ "$APP"
+
 section "Catching and XP"
 poketerm_run
 eq    "first terminal exits cleanly"     "$?" "0"
@@ -103,6 +107,15 @@ xp="$(trainer_field "['total_xp']")"
 check "first catch gives 10 or 150 XP ($xp)" test "$xp" = 10 -o "$xp" = 150
 check "first-catch achievement unlocked" grep -q "Just getting started" "$APP/trainer.json"
 check "username and underline shown"     grep -q -- "^.*tester" "$LAST_OUT"
+caught_one="$(sed -E 's/ [0-9]+$//; s/ \(shiny\)$//' "$APP/pokedex.txt" | head -n 1)"
+check "the catch is remembered: its name, time, nature, trainer and catch number" python3 - "$APP/pokemon.log" "$caught_one" <<'PY'
+import json, sys, re
+events = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+caught = [e["pokemon"] for e in events if e["e"] == "caught"]
+p = caught[0] if len(caught) == 1 else {}
+sys.exit(0 if p.get("name") == sys.argv[2] and re.match(r"\d{4}-\d\d-\d\dT\d\d:\d\d", p.get("caught_at", ""))
+         and p.get("nature") and p.get("catch_no") == 1 and "original_trainer" in p else 1)
+PY
 
 section "Sprites are shown at their original size"
 dex_before="$(cat "$APP/pokedex.txt")"
@@ -123,6 +136,8 @@ else
     fail "could determine the caught Pokemon and colorscripts"
 fi
 check "no resizing leftovers installed" test ! -e "$APP/sprite.py" -a ! -d "$APP/cache/sprites_fit"
+check "the old sprite cache isn't installed (colorscripts draws them)" test ! -e "$APP/cache/sprite_data"
+check "...but the Pokemon data cache is (entries work offline)" test -f "$APP/cache/api_data/pikachu.json"
 
 # -----------------------------------------------------------------------------
 section "Many terminals opening at once"
@@ -298,6 +313,83 @@ for _ in 1 2 3 4 5 6; do poketerm_cmd -- --gen 3 >/dev/null; done
 others="$(awk '{ n = $0; sub(/ [0-9]+$/, "", n); sub(/ \(shiny\)$/, "", n); print n }' "$APP/pokedex.txt" \
     | grep -vxFf "$REPO_ROOT/files/gen_files/gen3_list.txt" | wc -l | tr -d ' ')"
 eq "--gen 3 only catches Gen 3 Pokemon" "$others" "0"
+
+# -----------------------------------------------------------------------------
+section "Settings (Pokedex: press s)"
+gen_of() { local g; for g in 1 2 3 4 5 6 7 8; do grep -qx "$1" "$APP/gen_files/gen${g}_list.txt" && { echo "$g"; return; }; done; }
+printf 'generations=2,7\nsystem_details=off\n' > "$APP/settings.conf"
+seen=""
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    dex_before="$(cat "$APP/pokedex.txt")"; poketerm_run
+    seen="$seen $(gen_of "$(caught_name "$dex_before")")"
+done
+eq    "only the chosen generations are caught (2 and 7)" "$(tr ' ' '\n' <<< "$seen" | grep -v '^$' | sort -u | tr '\n' ' ')" "2 7 "
+check "system details off: no username or details beside the catch" bash -c '! grep -q "tester\|OS:" "$1"' _ "$LAST_OUT"
+dex_before="$(cat "$APP/pokedex.txt")"; poketerm_cmd -- --gen 5 >/dev/null
+eq    "a --gen typed by hand still wins for that run" "$(gen_of "$(caught_name "$dex_before")")" "5"
+printf 'generations=9,x\nsystem_details=maybe\n' > "$APP/settings.conf"
+poketerm_run
+eq    "nonsense in the settings file falls back to the defaults" "$?" "0"
+rm -f "$APP/settings.conf"
+g_home="$SANDBOX/gen-home"; mkdir -p "$g_home"
+# Reuse the Python already installed for the main test home (no second download).
+[[ -d "$RUNTIME" ]] && { mkdir -p "$g_home/.local/share"; ln -s "$RUNTIME" "$g_home/.local/share/poketerm-python"; }
+HOME="$g_home" POKETERM_REAL_HOME="$g_home" POKETERM_ZSHRC="$g_home/.zshrc" bash "$REPO_ROOT/install.sh" --gen 2-4 > "$SANDBOX/gen-install.log" 2>&1
+eq    "install --gen 2-4 saves the generations as a setting" "$(grep '^generations=' "$g_home/.local/share/poketerm/settings.conf")" "generations=2,3,4"
+check "...and the zshrc hook is plain 'poketerm' (no --gen)" bash -c 'grep -qx "  poketerm" "$1" && ! grep -q -- "--gen" "$1"' _ "$g_home/.zshrc"
+sed -i.bak 's/^  poketerm$/  poketerm --gen 6/' "$g_home/.zshrc"; rm -f "$g_home/.local/share/poketerm/settings.conf"
+HOME="$g_home" POKETERM_REAL_HOME="$g_home" POKETERM_ZSHRC="$g_home/.zshrc" bash "$REPO_ROOT/install.sh" --update > "$SANDBOX/gen-install.log" 2>&1
+check "an old hook's --gen moves into the settings on update" grep -qx "generations=6" "$g_home/.local/share/poketerm/settings.conf"
+check "...and the hook loses its --gen" bash -c '! grep -q -- "--gen" "$1"' _ "$g_home/.zshrc"
+chmod -R u+w "$g_home" 2>/dev/null; rm -rf -- "$g_home"
+
+# -----------------------------------------------------------------------------
+section "Moving to a new computer (--export / --import)"
+export POKETERM_PASSPHRASE="test passphrase 1"
+PYTHONPATH="$APP" HOME="$T_HOME" "$unit_python" -s -c 'import trade_store; trade_store.load_identity()' 2>/dev/null
+printf 'animations=off\n' > "$APP/settings.conf"
+x_dir="$SANDBOX/moving"; mkdir -p "$x_dir"; x_file="$x_dir/me.poketerm"
+poketerm_cmd POKETERM_PASSPHRASE="$POKETERM_PASSPHRASE" -- --export "$x_file"
+eq    "export succeeds" "$?" "0"
+check "...the file is private to you (0600)" bash -c '[[ "$(stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1")" == 600 ]]' _ "$x_file"
+check "...and nothing in it is readable without the passphrase" bash -c '! grep -qa "pikachu\|PRIVATE KEY\|tester" "$1"' _ "$x_file"
+poketerm_cmd POKETERM_PASSPHRASE="$POKETERM_PASSPHRASE" -- --export "$x_file"
+check "an export never overwrites an existing file" bash -c '[[ $1 != 0 ]] && grep -q "already exists" "$2"' _ "$?" "$LAST_OUT"
+n_home="$SANDBOX/new-computer"; mkdir -p "$n_home"
+[[ -d "$RUNTIME" ]] && { mkdir -p "$n_home/.local/share"; ln -s "$RUNTIME" "$n_home/.local/share/poketerm-python"; }
+HOME="$n_home" POKETERM_REAL_HOME="$n_home" POKETERM_ZSHRC="$n_home/.zshrc" bash "$REPO_ROOT/install.sh" > "$SANDBOX/new-install.log" 2>&1
+N_APP="$n_home/.local/share/poketerm"
+n_run() {  # n_run [VAR=value...] [-- poketerm args...]: poketerm on the "new computer"
+    local -a envs=(); while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done; [[ $# -gt 0 ]] && shift
+    env -i HOME="$n_home" USER=tester2 PATH="$n_home/.local/bin:$PATH" POKETERM_NO_UPDATE_CHECK=1 ${envs[@]+"${envs[@]}"} \
+        zsh "$N_APP/poketerm" "$@" > "$LAST_OUT" 2>&1 < /dev/null
+}
+n_run; n_run      # it has progress of its own
+n_before="$(cat "$N_APP/pokedex.txt")"
+n_run POKETERM_PASSPHRASE="wrong passphrase" -- --import "$x_file" --yes
+check "a wrong passphrase is refused, and nothing changes" \
+    bash -c 'grep -q "Wrong passphrase" "$1" && [[ "$(cat "$2")" == "$3" ]]' _ "$LAST_OUT" "$N_APP/pokedex.txt" "$n_before"
+n_run POKETERM_PASSPHRASE="$POKETERM_PASSPHRASE" -- --import "$x_file"
+check "without a terminal to confirm in (and no --yes), it asks rather than replacing" \
+    bash -c 'grep -q "confirm" "$1" && [[ "$(cat "$2")" == "$3" ]]' _ "$LAST_OUT" "$N_APP/pokedex.txt" "$n_before"
+n_run POKETERM_PASSPHRASE="$POKETERM_PASSPHRASE" -- --import "$x_file" --yes
+eq    "import succeeds" "$?" "0"
+for f in pokedex.txt trainer.json settings.conf trade/identity.key trade/identity.crt; do
+    check "...$f arrives exactly" same_file "$APP/$f" "$N_APP/$f"
+done
+# Every story arrives unchanged. (Import then brings the stories in line with the
+# Pokedex, which may add lines at the end if they'd drifted - as they have here,
+# after the Pokedex was edited by hand earlier in these tests.)
+check "...every Pokemon's story arrives unchanged (pokemon.log)" \
+    bash -c '[[ "$(head -c "$(wc -c < "$1")" "$2")" == "$(cat "$1")" ]]' _ "$APP/pokemon.log" "$N_APP/pokemon.log"
+check "...the private key stays private (0600)" bash -c '[[ "$(stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1")" == 600 ]]' _ "$N_APP/trade/identity.key"
+check "...the new computer's own progress was backed up first" \
+    bash -c 'f=$(ls -d "$1"/backups/*-before-import 2>/dev/null | head -1) && [[ "$(cat "$f/pokedex.txt")" == "$2" ]]' _ "$N_APP" "$n_before"
+n_dex="$(cat "$N_APP/pokedex.txt")"; n_run
+check "...and poketerm carries on catching there (Pokedex trusted, not 'changed outside')" \
+    bash -c '[[ "$(cat "$1")" != "$2" ]] && ! grep -qi "outside" "$3"' _ "$N_APP/pokedex.txt" "$n_dex" "$LAST_OUT"
+unset POKETERM_PASSPHRASE
+chmod -R u+w "$n_home" "$x_dir" 2>/dev/null; rm -rf -- "$n_home" "$x_dir"; rm -f "$APP/settings.conf"
 
 # -----------------------------------------------------------------------------
 section "Updating keeps progress and settings"

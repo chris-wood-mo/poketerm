@@ -26,12 +26,11 @@ BOLD = "\033[1m"
 RESET = "\033[0m"
 INVERT = "\033[7m"
 
-WIDTH = 58                  # inside the frame
+WIDTH = 50                  # the trade screen's width on the device
 STATUS_SECONDS = 15         # how long a message under the screen stays
 PAGE_SIZE = 10
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 GO_COLORSCRIPTS = Path.home() / ".local/share/pokemon-go-colorscripts/pokemon-go-colorscripts"
-CACHE_DIR = Path.home() / ".local/share/poketerm/cache/sprite_data"
 TRAINER_FILE = Path.home() / ".local/share/poketerm/trainer.json"
 DEBUG_LOG = Path.home() / ".local/share/poketerm/trade/debug.log"
 _DEBUG = os.environ.get("POKETERM_TRADE_DEBUG") == "1"
@@ -71,21 +70,24 @@ def fit(text, width):
 
 
 class Screen:
-    def __init__(self):
+    """Collects one trade screen's lines; show() draws them on the device."""
+
+    def __init__(self, page=None):
+        self.page = page
         self.lines = []
+        self.keys = []
 
     def top(self):
-        self.lines.append(f"{RED}┌{'─' * (WIDTH + 2)}┐{RESET}")
-
-    def sep(self):
-        self.lines.append(f"{RED}├{'─' * (WIDTH + 2)}┤{RESET}")
+        pass
 
     def bottom(self):
-        self.lines.append(f"{RED}└{'─' * (WIDTH + 2)}┘{RESET}")
+        pass
+
+    def sep(self):
+        self.lines.append(f"{GREY}{'─' * WIDTH}{RESET}")
 
     def row(self, text=""):
-        text = fit(text, WIDTH)
-        self.lines.append(f"{RED}│{RESET} {text}{' ' * (WIDTH - visible(text))} {RED}│{RESET}")
+        self.lines.append(fit(text, WIDTH))
 
     def center(self, text):
         pad = max(0, (WIDTH - visible(text)) // 2)
@@ -103,8 +105,13 @@ class Screen:
             self.row(colour + line + (RESET if colour else ""))
 
     def show(self):
-        sys.stdout.write("\033[H" + "\n".join(self.lines) + "\n\033[J")
-        sys.stdout.flush()
+        import device
+        page = self.page
+        info, slots, lights, status = ([], ("Trade", ""), (True, False, False), "Trading")
+        if page is not None:
+            info, slots, lights, status = page.side()
+        device.show(self.lines, width=WIDTH, info=info, keys=self.keys, slots=slots,
+                    lights=lights, status=status, title="Pokemon Trading")
 
 
 def pokemon_label(p, width=None):
@@ -143,11 +150,7 @@ def get_sprite(pokemon):
         except (OSError, subprocess.SubprocessError):
             lines = []
     if not lines:
-        cache = CACHE_DIR / f"{name}_{'shiny' if shiny else 'normal'}.txt"
-        try:
-            lines = cache.read_text().splitlines()
-        except OSError:
-            return []
+        return []                     # callers show "(no sprite)" instead
     plain = lambda l: ANSI_RE.sub("", l)
     while lines and not plain(lines[-1]).strip():
         lines.pop()
@@ -184,131 +187,104 @@ BALL = [
 BALL_W, BALL_H = 11, len(BALL)
 
 
-class Animator:
-    """Frame-by-frame drawing at fixed positions. Any key skips ahead."""
+class Animation:
+    """Frames of a trade animation, played on the device's screen. Any key skips."""
 
-    def __init__(self):
-        size = shutil.get_terminal_size((80, 24))
-        self.cols, self.rows = size.columns, size.lines
+    def __init__(self, pokemon, peer_name, heading, size=None):
+        import device
+        self.device = device
+        self.sprite = get_sprite(pokemon) or ["", f"{GREY}(no sprite){RESET}"]
+        self.sw = max(visible(l) for l in self.sprite)
+        self.sh = len(self.sprite)
+        # Both animations of a trade share one size, so the device never
+        # changes shape between sending and receiving.
+        self.W, self.H = size or animation_size([pokemon])
+        self.left = (self.W - self.sw) // 2
+        self.top = 2
+        self.ball_y = self.top + max(0, (self.sh - BALL_H) // 2)
+        self.heading = heading
+        self.pokemon = pokemon
+        self.peer = peer_name
         self.skip = False
 
+    def frame(self, sprite_rows=None, ball_x=None, lift=0, sparkle=False, caption=""):
+        rows = [""] * self.H
+        rows[0] = f"{YELLOW}{BOLD}{self.heading:^{self.W}}{RESET}"
+        if sprite_rows is not None:
+            first, count = sprite_rows
+            for i in range(first, min(first + count, self.sh)):
+                rows[self.top + i] = " " * self.left + self.sprite[i]
+        if ball_x is not None:
+            x = max(0, ball_x)
+            for i, (colour, line) in enumerate(BALL):
+                y = self.ball_y + i - (lift if i < 2 else 0)
+                if 0 < y < self.H - 1:
+                    rows[y] = fit(" " * x + colour + line, self.W)      # slides off the edge
+            if sparkle:
+                rows[max(1, self.ball_y - lift - 1)] = fit(" " * (x + BALL_W // 2) + WHITE + BOLD + "✦", self.W)
+        if caption:
+            rows[self.H - 1] = " " * max(0, (self.W - visible(caption)) // 2) + caption
+        self.device.show(rows, width=self.W, wrap=False,
+                         info=[f"{BOLD}TRADING{RESET}", "", f"With {self.peer}", "",
+                               store.display(self.pokemon)],
+                         keys=[("any", "Skip")], slots=("Trading", self.peer[:12]),
+                         lights=(True, True, True), status="Trading...", title="Trade")
+
     def pause(self, seconds):
-        if self.skip:
-            return
-        if readchar.readkey_timeout(seconds) is not None:
+        if not self.skip and readchar.readkey_timeout(seconds) is not None:
             self.skip = True
 
-    def at(self, row, col, text):
-        if 1 <= row <= self.rows:
-            sys.stdout.write(f"\033[{row};{max(1, col)}H{text}{RESET}")
 
-    def clear(self):
-        sys.stdout.write("\033[2J\033[H")
-
-    def caption(self, row, text):
-        self.at(row, 1, "\033[2K")
-        self.at(row, max(1, (self.cols - visible(text)) // 2 + 1), text)
-        sys.stdout.flush()
-
-    def draw_ball(self, row, col, lift=0):
-        for i, (colour, line) in enumerate(BALL):
-            r = row + i - (lift if i < 2 else 0)
-            self.at(r, col, colour + line)
-
-    def erase(self, row, col, width, height):
-        for i in range(height):
-            self.at(row + i, col, " " * width)
-
-    def sprite_box(self, sprite):
-        width = max((visible(l) for l in sprite), default=0)
-        height = min(len(sprite), max(1, self.rows - 6))
-        top = max(2, (self.rows - height) // 2 - 1)
-        left = max(1, (self.cols - width) // 2 + 1)
-        return top, left, width, height
-
-    def draw_sprite(self, sprite, top, left, rows=None):
-        for i, line in enumerate(sprite[: rows if rows is not None else len(sprite)]):
-            if top + i >= self.rows - 2:
-                break
-            self.at(top + i, left, line)
+def animation_size(pokemons):
+    """(width, height) of a screen that fits every one of these Pokemon."""
+    sprites = [get_sprite(p) or [""] for p in pokemons]
+    w = max(visible(l) for sp in sprites for l in sp) if sprites else 0
+    h = max(len(sp) for sp in sprites) if sprites else 0
+    return max(WIDTH, w + 4), max(h + 5, BALL_H + 7)
 
 
-def animate_send(pokemon, peer_name):
+def animate_send(pokemon, peer_name, size=None):
     """Your Pokemon goes back into its Poke Ball and flies off to the other trainer."""
-    a = Animator()
-    sprite = get_sprite(pokemon)
+    a = Animation(pokemon, peer_name, "SENDING", size)
     name = store.display(pokemon).replace(" (shiny)", "")
-    a.clear()
-    top, left, width, height = a.sprite_box(sprite or [" "])
-    caption_row = min(a.rows - 1, top + height + 1)
-    a.draw_sprite(sprite, top, left)
-    a.caption(caption_row, f"{YELLOW}Take care, {name}!{RESET}")
+    a.frame((0, a.sh), caption=f"{YELLOW}Take care, {name}!{RESET}")
     a.pause(1.0)
-    a.caption(caption_row, f"{YELLOW}{name}, return!{RESET}")
-    for shown in range(min(height, len(sprite)), -1, -max(1, height // 8)):
-        a.erase(top, left, width, height)
-        a.draw_sprite(sprite, top + (height - shown) // 2, left, shown)
-        sys.stdout.flush()
+    step = max(1, a.sh // 8)
+    for shown in range(a.sh, 0, -step):              # it shrinks back into the ball
+        a.frame(((a.sh - shown) // 2, shown), caption=f"{YELLOW}{name}, return!{RESET}")
         a.pause(0.04)
-    a.erase(top, left, width, height)
-    ball_row = top + max(0, height // 2 - BALL_H // 2)
-    col = (a.cols - BALL_W) // 2 + 1
-    a.draw_ball(ball_row, col)
-    sys.stdout.flush()
+    centre = (a.W - BALL_W) // 2
+    a.frame(ball_x=centre, caption=f"{YELLOW}{name}, return!{RESET}")
     a.pause(0.4)
-    while col < a.cols:
-        a.erase(ball_row - 1, col, BALL_W, BALL_H + 1)
-        col += 3
-        hop = 1 if (col // 3) % 4 in (1, 2) else 0
-        if col + BALL_W <= a.cols:
-            a.draw_ball(ball_row - hop, col)
-        sys.stdout.flush()
+    for x in range(centre, a.W, 3):                  # ...and hops away
+        a.frame(ball_x=x, lift=0, caption="")
         a.pause(0.03)
-    a.caption(caption_row, f"{GREEN}{name} was sent to {peer_name}.{RESET}")
+    a.frame(caption=f"{GREEN}{name} was sent to {peer_name}.{RESET}")
     a.pause(1.0)
 
 
-def animate_receive(pokemon, peer_name):
+def animate_receive(pokemon, peer_name, size=None):
     """A Poke Ball arrives, wobbles, opens, and your new Pokemon appears."""
-    a = Animator()
-    sprite = get_sprite(pokemon)
+    a = Animation(pokemon, peer_name, "RECEIVING", size)
     name = store.display(pokemon).replace(" (shiny)", "")
-    a.clear()
-    top, left, width, height = a.sprite_box(sprite or [" "])
-    caption_row = min(a.rows - 1, top + height + 1)
-    ball_row = top + max(0, height // 2 - BALL_H // 2)
-    target = (a.cols - BALL_W) // 2 + 1
-    a.caption(caption_row, f"{YELLOW}{peer_name} sent you a Poke Ball!{RESET}")
-    col = 1
-    while col < target:
-        a.erase(ball_row - 1, max(1, col - 3), BALL_W + 3, BALL_H + 1)
-        a.draw_ball(ball_row - (1 if (col // 3) % 4 in (1, 2) else 0), col)
-        sys.stdout.flush()
-        col += 3
+    centre = (a.W - BALL_W) // 2
+    arriving = f"{YELLOW}{peer_name} sent you a Poke Ball!{RESET}"
+    for x in range(0, centre, 3):
+        a.frame(ball_x=x, caption=arriving)
         a.pause(0.03)
-    a.erase(ball_row - 1, 1, a.cols, BALL_H + 1)
-    a.draw_ball(ball_row, target)
-    sys.stdout.flush()
+    a.frame(ball_x=centre, caption=arriving)
     a.pause(0.4)
-    for shift in (-1, 1, -1, 1, 0):          # wobble
-        a.erase(ball_row, target - 1, BALL_W + 2, BALL_H)
-        a.draw_ball(ball_row, target + shift)
-        sys.stdout.flush()
+    for shift in (-1, 1, -1, 1, 0):                  # wobble
+        a.frame(ball_x=centre + shift, caption=arriving)
         a.pause(0.12 if shift else 0.35)
-    a.erase(ball_row - 2, target - 1, BALL_W + 2, BALL_H + 2)
-    a.draw_ball(ball_row, target, lift=2)    # the ball opens
-    a.at(ball_row - 3, target + BALL_W // 2, WHITE + BOLD + "✦")
-    sys.stdout.flush()
+    a.frame(ball_x=centre, lift=2, sparkle=True, caption=arriving)      # it opens
     a.pause(0.3)
-    a.erase(ball_row - 3, target - 1, BALL_W + 2, BALL_H + 3)
-    for shown in range(0, min(height, len(sprite)) + 1, max(1, height // 10)):
-        a.draw_sprite(sprite, top, left, shown)
-        sys.stdout.flush()
+    step = max(1, a.sh // 10)
+    for shown in range(0, a.sh + 1, step):           # the Pokemon appears
+        a.frame((0, shown), caption=arriving)
         a.pause(0.03)
-    a.draw_sprite(sprite, top, left)
     shiny = f"  {YELLOW}★ It's shiny!{RESET}" if pokemon.get("shiny") else ""
-    a.caption(caption_row, f"{GREEN}{peer_name} sent you {name}!{RESET}{shiny}")
-    sys.stdout.flush()
+    a.frame((0, a.sh), caption=f"{GREEN}{peer_name} sent you {name}!{RESET}{shiny}")
     a.skip = False
     a.pause(1.5)
 
@@ -328,6 +304,7 @@ class TradePage:
         self.cursor = 0
         self.view = "trainers"               # trainers | address | connecting | session
         self.connecting = None               # {"label", "cancelled"} while connecting
+        self.picking = None                  # {"item", "recs", "cursor"}: choosing which one to send
         self.connected = queue.Queue()       # (attempt, channel or error) from the connect thread
         self.peer_cursor = 0
         self.address = ""
@@ -551,15 +528,34 @@ class TradePage:
 
     def finish_trade(self, result):
         try:
-            animate_send(result["gave"], result["peer"])
-            animate_receive(result["got"], result["peer"])
+            import settings
+            if settings.animations_on():                  # can be turned off in settings
+                size = animation_size([result["gave"], result["got"]])
+                animate_send(result["gave"], result["peer"], size)
+                animate_receive(result["got"], result["peer"], size)
         except Exception:
             pass                 # an animation problem must never hide the result
         self.session = None
+        self.picking = None
         self.view = "trainers"
         sys.stdout.write("\033[2J")
         self.refresh_items()
-        self.flash(f"Trade complete! You got {store.display(result['got'])} from {result['peer']}.")
+        message = f"Trade complete! You got {store.display(result['got'])} from {result['peer']}."
+        unlocked = self.new_achievements()
+        if unlocked:
+            message += " Achievement unlocked: " + ", ".join(unlocked) + "!"
+        self.flash(message)
+
+    def new_achievements(self):
+        """Check achievements now (trades can earn some) and return any new ones."""
+        try:
+            import achievements
+            before = {a["name"] for a in achievements.load_trainer().get("hall_of_fame", [])}
+            achievements.check_pokedex_achievements()
+            after = achievements.load_trainer().get("hall_of_fame", [])
+            return [a["name"] for a in after if a["name"] not in before]
+        except Exception:
+            return []           # achievements must never get in the way of a trade
 
     # -- keys --------------------------------------------------------------
     def handle_key(self, key):
@@ -673,6 +669,52 @@ class TradePage:
             self.view = "session"
         return changed
 
+    def search_items(self):
+        """Search the Pokemon you can trade; the list's cursor moves to the one chosen."""
+        import search
+        order = store.dex_order()
+        entries = [{"name": it["name"], "no": order.get(it["name"], 0), "shiny": it["shiny"],
+                    "count": it["count"], "index": i} for i, it in enumerate(self.items)]
+
+        def describe(e):
+            star = f"{YELLOW}★{RESET}" if e["shiny"] else " "
+            return f"{e['no']:03d}  {store.display(e).replace(' (shiny)', '')[:16]:<16} {star} {GREY}x{e['count']}{RESET}"
+
+        found = search.search(entries, "FIND A POKEMON TO TRADE", describe, width=WIDTH,
+                              info=[f"{BOLD}SEARCH{RESET}", "", "Your Pokemon you", "can trade.", "",
+                                    "★ = shiny"], slots=("Trade", f"{len(entries)} kinds"), status="Search")
+        if found:
+            self.cursor = found["index"]
+        sys.stdout.write("\033[2J")
+
+    def offer_lines(self, snap):
+        """One line about each Pokemon on offer (nature, when caught, by whom)."""
+        try:
+            import collection
+        except Exception:
+            return "", ""
+        mine = collection.summary(snap.get("my_details")) if snap.get("my_details") else ""
+        theirs = ""
+        if snap.get("peer_offer"):
+            clean = collection.clean_details(snap.get("peer_details"), snap["peer_offer"]["name"],
+                                             snap["peer_offer"]["shiny"])
+            theirs = collection.summary(clean) if clean else ""
+        return mine, theirs
+
+    def individuals(self, item):
+        """Your Pokemon of this kind, each with its own story (oldest first)."""
+        try:
+            import collection
+            with store.pokedex_lock():
+                return collection.of_kind(item["name"], item["shiny"])
+        except Exception:
+            return []
+
+    def offer(self, item, rec):
+        import collection
+        details = collection.for_trade(rec) if rec else None
+        self.session.set_offer({"name": item["name"], "shiny": item["shiny"]}, details)
+
     def terminal_app(self):
         return {"Apple_Terminal": "Terminal", "iTerm.app": "iTerm", "vscode": "Visual Studio Code",
                 "WarpTerminal": "Warp", "ghostty": "Ghostty"}.get(os.environ.get("TERM_PROGRAM", ""),
@@ -700,6 +742,7 @@ class TradePage:
         phase = snap["phase"]
         if phase in ("failed", "pending"):
             self.session = None
+            self.picking = None
             self.view = "trainers"
             try:
                 self.refresh_items()
@@ -718,10 +761,37 @@ class TradePage:
                 if not self.session.cancel():
                     self.flash("Almost done - the trade can't be cancelled now.", YELLOW)
                 return
+            if phase == "choosing" and not snap["my_sig"] and self.picking:
+                pick = self.picking
+                if key == readchar.key.ENTER:
+                    rec = pick["recs"][pick["cursor"]]
+                    if rec.get("favourite"):
+                        self.flash("That one's a ♥ favourite, so it can't be traded. "
+                                   "Unmark it in the Pokedex first.", YELLOW)
+                        return
+                    self.picking = None
+                    self.offer(pick["item"], rec)
+                elif key in ("b", "\x1b"):
+                    self.picking = None
+                else:
+                    pick["cursor"] = self.move(key, pick["cursor"], len(pick["recs"]))
+                return
             if phase == "choosing" and not snap["my_sig"]:
+                if key == "/" and self.items:
+                    self.search_items()
+                    return
                 if key == readchar.key.ENTER and self.items:
                     item = self.items[self.cursor]
-                    self.session.set_offer({"name": item["name"], "shiny": item["shiny"]})
+                    recs = self.individuals(item)
+                    tradeable = [i for i, r in enumerate(recs) if not r.get("favourite")]
+                    if recs and not tradeable:
+                        what = "it's a ♥ favourite" if len(recs) == 1 else "they're all ♥ favourites"
+                        self.flash(f"You can't trade that {pokemon_label(item)} - {what}. "
+                                   f"Unmark it in the Pokedex first.", YELLOW)
+                    elif len(recs) > 1:
+                        self.picking = {"item": item, "recs": recs, "cursor": tradeable[0]}   # which one?
+                    else:
+                        self.offer(item, recs[0] if recs else None)
                 elif key == "y" and snap["my_offer"] and snap["peer_offer"]:
                     self.session.confirm()
                 else:
@@ -730,9 +800,28 @@ class TradePage:
             self.flash(str(e), RED)
 
     # -- screens -------------------------------------------------------------
+    def side(self):
+        """What the device's right half shows: (info lines, slots, lights, status)."""
+        left = self.journal_info()[0]
+        if self.session:
+            snap = self.session.snapshot()
+            info = [f"{BOLD}TRADING WITH{RESET}", f"{snap['peer_name']}", "",
+                    f"{BOLD}PAIRING CODE{RESET}", f"{snap['code'] or '--- ---'}", ""]
+            if snap["my_offer"] or snap["peer_offer"]:
+                mine_line, theirs_line = self.offer_lines(snap)
+                info += ["You give:", "  " + (store.display(snap["my_offer"]) if snap["my_offer"] else "...")]
+                info += ["  " + mine_line.split(" · ")[0]] if mine_line else []
+                info += ["You get:", "  " + (store.display(snap["peer_offer"]) if snap["peer_offer"] else "...")]
+                info += ["  " + theirs_line.split(" · ")[0]] if theirs_line else []
+            return info, ("Trading", snap["peer_name"][:12]), (True, True, bool(snap["peer_sig"])), "Trading..."
+        nearby = len(self.discovery.nearby()) if self.discovery else 0
+        info = [f"{BOLD}POKEMON TRADING{RESET}", "", proto.clean_name(self.trainer["name"]),
+                f"Level {self.trainer['level']}", "", f"Trades left: {left}/{store.DAILY_LIMIT}",
+                f"Trainers nearby: {nearby}", f"Your Pokemon: {sum(i['count'] for i in self.items)}"]
+        return info, ("Trade", f"{left}/{store.DAILY_LIMIT} left"), (True, nearby > 0, left > 0), "Trade"
+
     def header(self, s):
-        s.top()
-        s.center(f"{YELLOW}Pokemon Trading{RESET}")
+        s.center(f"{YELLOW}{BOLD}POKEMON TRADING{RESET}")
         s.sep()
         left = self.journal_info()[0]
         colour = GREEN if left else RED
@@ -763,8 +852,8 @@ class TradePage:
         s.row(f"{GREY}Page {self.cursor // PAGE_SIZE + 1}/{pages}{RESET}")
 
     def footer(self, s, keys):
-        s.sep()
-        s.row(keys)
+        """keys: [(key, label)] for the device's buttons; then any message."""
+        s.keys = list(keys)
         if self.status and time.monotonic() - self.status_at > STATUS_SECONDS:
             self.status = ""
         if self.status:
@@ -782,7 +871,7 @@ class TradePage:
                 debug(f"slow draw ({self.view}): {took:.2f}s")
 
     def _draw(self):
-        s = Screen()
+        s = Screen(self)
         self.header(s)
         if self.view == "trainers":
             self.draw_trainers(s)
@@ -790,7 +879,7 @@ class TradePage:
             self.draw_address(s)
         elif self.view == "connecting" and self.connecting:
             s.row(f"Connecting to {BOLD}{self.connecting['label']}{RESET}...")
-            self.footer(s, f"{YELLOW}x{RESET} = Cancel")
+            self.footer(s, [("x", "Cancel")])
         elif self.view == "session" and self.session:
             self.draw_session(s)
         s.show()
@@ -821,9 +910,8 @@ class TradePage:
         s.row(f"{GREY}Your address: {self.address_text}{RESET}")
         self.pending_line(s)
         if not self.items:
-            s.row(f"{RED}You don't have any Pokemon to trade yet - catch some first!{RESET}")
-        self.footer(s, f"{GREEN}Enter{RESET} = Invite  {GREEN}↑/↓{RESET} = Move  {GREEN}c{RESET} = Enter address  "
-                       f"{YELLOW}q{RESET} = Back")
+            s.wrap("You don't have any Pokemon to trade yet - catch some first!", RED)
+        self.footer(s, [("⏎", "Invite"), ("↑↓", "Move"), ("c", "Address"), ("q", "Back")])
 
     def discovery_help(self, s):
         """Why nobody's listed yet, and what to do about it."""
@@ -839,7 +927,7 @@ class TradePage:
                        "(a firewall?), so nobody can see you.", RED)
             return
         nets = ", ".join(f"{n} {a}" for n, a, _ in d.interfaces[:2]) or "no network found"
-        s.row(f"{GREY}Looking for trainers on your network ({nets})...{RESET}")
+        s.wrap(f"Looking for trainers on your network ({nets})...", GREY)
         s.row(f"{GREY}Ask them to open their Pokedex and press t.{RESET}")
         if time.monotonic() - d.started > 10:
             s.wrap("Still nobody? Check you're on the same Wi-Fi. Guest and office networks often hide "
@@ -849,10 +937,10 @@ class TradePage:
 
     def draw_address(self, s):
         s.row(f"{YELLOW}Connect by address{RESET}")
-        s.row("Type the address shown on the other trainer's trade page:")
+        s.wrap("Type the address shown on the other trainer's trade page:")
         s.row(f"> {self.address}{INVERT} {RESET}")
         s.row(f"{GREY}Your address is {self.address_text}{RESET}")
-        self.footer(s, f"{GREEN}Enter{RESET} = Connect  {YELLOW}Esc{RESET} = Back")
+        self.footer(s, [("⏎", "Connect"), ("Esc", "Back")])
 
     def draw_session(self, s):
         snap = self.session.snapshot()
@@ -861,33 +949,33 @@ class TradePage:
 
         if phase == "handshake":
             s.row("Connecting securely...")
-            self.footer(s, f"{YELLOW}x{RESET} = Cancel")
+            self.footer(s, [("x", "Cancel")])
             return
         if phase in ("failed", "pending"):
             colour = RED if phase == "failed" else YELLOW
             s.wrap(snap["error"] or "The trade stopped.", colour)
-            self.footer(s, "Press any key to continue")
+            self.footer(s, [("any", "Continue")])
             return
         if phase == "invited":
             s.row(f"{BOLD}{peer}{RESET} wants to trade with you!")
             if snap["peer_offer"]:
                 s.row(f"They're offering: {pokemon_label(snap['peer_offer'])}")
             else:
-                s.row(f"{GREY}If you accept, you'll both choose a Pokemon to trade.{RESET}")
+                s.wrap("If you accept, you'll both choose a Pokemon to trade.", GREY)
             if snap["peer_trades_left"] is not None:
                 s.row(f"{GREY}{peer} has {snap['peer_trades_left']} trades left today.{RESET}")
             s.sep()
             s.row(f"{YELLOW}Pairing code:{RESET} {BOLD}{code}{RESET}")
             s.wrap(f"Check that {peer}'s screen shows the same code. If it doesn't, press n - "
                    f"someone else may be trying to join in.", GREY)
-            self.footer(s, f"{GREEN}y{RESET} = Accept   {RED}n{RESET} = Decline")
+            self.footer(s, [("y", "Accept"), ("n", "Decline")])
             return
         if phase == "waiting":
             s.row(f"Waiting for {BOLD}{peer}{RESET} to accept...")
             s.sep()
             s.row(f"{YELLOW}Pairing code:{RESET} {BOLD}{code}{RESET}")
             s.wrap(f"{peer}'s screen should show the same code. If it doesn't, cancel.", GREY)
-            self.footer(s, f"{YELLOW}x{RESET} = Cancel")
+            self.footer(s, [("x", "Cancel")])
             return
 
         # choosing / committing
@@ -896,32 +984,48 @@ class TradePage:
         s.row(f"{YELLOW}Trading with:{RESET} {peer}    {YELLOW}Code:{RESET} {code}")
         s.sep()
         s.row(f"{RED}You give:{RESET} {give}")
+        mine_line, theirs_line = self.offer_lines(snap)
+        if mine_line:
+            s.row(f"          {GREY}{mine_line}{RESET}")
         s.row(f"{GREEN}You get:{RESET}  {get}")
+        if theirs_line:
+            s.row(f"          {GREY}{theirs_line}{RESET}")
         mine = f"{GREEN}✔ you confirmed{RESET}" if snap["my_sig"] else f"{GREY}you haven't confirmed{RESET}"
         theirs = f"{GREEN}✔ {peer} confirmed{RESET}" if snap["peer_sig"] else f"{GREY}{peer} hasn't confirmed{RESET}"
         s.row(f"{mine}   {theirs}")
         s.sep()
         if phase == "committing":
             s.row(f"{YELLOW}Trading... don't close the terminal.{RESET}")
-            self.footer(s, f"{GREY}Please wait{RESET}")
+            self.footer(s, [])
             return
         if snap["my_sig"]:
             s.row(f"Waiting for {peer} to confirm...")
-            self.footer(s, f"{YELLOW}x{RESET} = Cancel trade")
+            self.footer(s, [("x", "Cancel")])
+            return
+        if self.picking:
+            pick = self.picking
+            s.row(f"{YELLOW}Which {pokemon_label(pick['item'])} will you send?{RESET}")
+            import collection
+            for i, rec in enumerate(pick["recs"][:PAGE_SIZE]):
+                no = f"#{rec['catch_no']} " if rec.get("catch_no") else ""
+                text = f"{no}{collection.summary(rec)}"
+                if rec.get("favourite"):
+                    text = f"{GREY}{text} (can't trade){RESET}"
+                s.row(f"{INVERT}> {fit(text, WIDTH - 2)}{RESET}" if i == pick["cursor"] else f"  {fit(text, WIDTH - 2)}")
+            self.footer(s, [("⏎", "Send this"), ("↑↓", "Move"), ("b", "Back")])
             return
         s.row(f"{YELLOW}Your Pokemon:{RESET}")
         self.pokemon_rows(s)
-        keys = f"{GREEN}Enter{RESET} = Offer this one  "
+        keys = [("⏎", "Offer"), ("↑↓", "Move"), ("/", "Search")]
         if snap["my_offer"] and snap["peer_offer"]:
-            keys += f"{GREEN}y{RESET} = Confirm trade  "
-        self.footer(s, keys + f"{YELLOW}x{RESET} = Cancel")
+            keys.append(("y", "Confirm"))
+        self.footer(s, keys + [("x", "Cancel")])
 
     def message(self, title, text, colour):
-        s = Screen()
-        s.top(); s.center(f"{YELLOW}{title}{RESET}"); s.sep()
+        s = Screen(self)
+        s.center(f"{YELLOW}{title}{RESET}"); s.sep()
         s.wrap(text, colour)
-        s.sep(); s.row("Press any key to go back"); s.bottom()
-        sys.stdout.write("\033[2J")
+        s.keys = [("any", "Back")]
         s.show()
         readchar.readkey()
 

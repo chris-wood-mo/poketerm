@@ -33,6 +33,13 @@ def party(argv):
     ident = store.load_identity()
     name, _, variant = give.partition(":")
     offer = {"name": name, "shiny": variant == "shiny"}
+    details = None
+    pick = os.environ.get("POKETERM_TEST_PICK")          # offer this exact Pokemon (by nature)
+    if pick:
+        import collection
+        with store.pokedex_lock():
+            recs = [r for r in collection.of_kind(offer["name"], offer["shiny"]) if r.get("nature") == pick]
+        details = collection.for_trade(recs[0]) if recs else None
     me = "Ash" if mode.startswith("connect") else "Misty"
     result = {}
 
@@ -74,7 +81,7 @@ def party(argv):
                         sess.decline()
                     else:
                         sess.accept()
-                        sess.set_offer(offer)
+                        sess.set_offer(offer, details)
             elif kind == "changed":
                 if snap["phase"] == "choosing" and snap["my_offer"] and snap["peer_offer"] and not snap["my_sig"]:
                     if "slow_confirm" in faults:
@@ -125,7 +132,9 @@ def party(argv):
             if mode == "connect_resolve":
                 result["settled"] = proto.resolve_session(ch, ident, me)
             else:
-                run(proto.TradeSession(wrap(ch), ident, me, "a", my_offer=offer))
+                sess = proto.TradeSession(wrap(ch), ident, me, "a", my_offer=offer)
+                sess.my_details = details
+                run(sess)
     time.sleep(0.3)
     print(json.dumps(result, default=str))
 
@@ -170,6 +179,10 @@ class Runner:
             f.write(f"{hashlib.sha256(text.encode()).hexdigest()}  {dex}\n")
         trade = os.path.join(app, "trade")
         if not keep_history:
+            try:
+                os.unlink(os.path.join(app, "pokemon.log"))
+            except FileNotFoundError:
+                pass
             for n in ("trades.log", "known_trainers.json", "inflight.json", "pokedex.staged"):
                 try:
                     os.unlink(os.path.join(trade, n))
@@ -186,7 +199,7 @@ class Runner:
         return hashlib.sha256(open(dex, "rb").read()).hexdigest() == recorded
 
     def trade(self, ash_gives, misty_gives, ash_fault="none", misty_fault="none",
-              ash_mode="connect", misty_mode="listen", flood=False):
+              ash_mode="connect", misty_mode="listen", flood=False, ash_pick=None):
         rv = os.path.join(self.sandbox, f"rv-{time.time_ns()}")
         procs = {}
         junk = []
@@ -195,6 +208,9 @@ class Runner:
             if who == "ash" and flood:
                 junk = self.flood(rv)
             env = dict(os.environ, HOME=self.homes[who])
+            env.pop("POKETERM_TEST_PICK", None)
+            if who == "ash" and ash_pick:
+                env["POKETERM_TEST_PICK"] = ash_pick
             procs[who] = subprocess.Popen([self.python(who), os.path.abspath(__file__), "party", mode, give, rv, fault],
                                           env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         out = {}
@@ -274,11 +290,16 @@ class Runner:
         self.check("both Pokedex checksums are valid after the trade", self.hash_ok("ash") and self.hash_ok("misty"))
         rc, out = self.catch("ash")
         self.check("catching still works after a trade", rc == 0 and "modified outside" not in out, out[-300:])
+        got = self.achievements("ash")
+        self.check("after a first real trade: 'Nice doing business with you' unlocked",
+                   "Nice doing business with you" in got, got)
         # The Staryu Ash just received (his only one) can be traded on straight away.
         before_catch = [l for l in self.pokedex("ash") if not l.startswith("staryu ")]
         self.set_pokedex("ash", ["bulbasaur 1", "pikachu 1", "staryu 1"], keep_history=True)
         self.set_pokedex("misty", ["squirtle 1", "pikachu 1", "staryu 2"], keep_history=True)
         r = self.trade("staryu", "squirtle")
+        got = self.achievements("misty")
+        self.check("Misty got her traded-away Staryu back: 'Boomerang' unlocked", "Boomerang" in got, got)
         self.check("a Pokemon received in a trade can be traded on",
                    r["ash"].get("outcome") == "done" and "staryu 1" not in self.pokedex("ash")
                    and "squirtle 1" in self.pokedex("ash") and "staryu 3" in self.pokedex("misty"),
@@ -287,6 +308,9 @@ class Runner:
         # 2. Trading away the last one removes it; shiny stays shiny
         self.set_pokedex("ash", ash0); self.set_pokedex("misty", misty0)
         r = self.trade("eevee:shiny", "squirtle")
+        self.check("trading a shiny: 'That's very generous!' for the giver, 'Special Delivery' for the receiver",
+                   "That's very generous!" in self.achievements("ash") and "Special Delivery" in self.achievements("misty"),
+                   (self.achievements("ash"), self.achievements("misty")))
         self.check("shiny trade: Ash's last shiny Eevee is gone, Misty has it as shiny",
                    "eevee (shiny) 1" not in self.pokedex("ash") and "eevee (shiny) 1" in self.pokedex("misty")
                    and "squirtle 1" in self.pokedex("ash") and "squirtle 1" not in self.pokedex("misty"),
@@ -354,10 +378,77 @@ class Runner:
             self.check(f"{who} crashes ({fault}): checksums valid, nothing left pending",
                        self.hash_ok("ash") and self.hash_ok("misty") and not self.pending("ash") and not self.pending("misty"))
 
+        # 5b. Each Pokemon's story travels with it, and comes back if cancelled
+        self.set_pokedex("ash", ["pikachu 2"]); self.set_pokedex("misty", ["staryu 2"])
+        seeded = self.collection("ash", """
+import random
+with trade_store.pokedex_lock():
+    collection.reconcile()                       # the 2 Pikachu appear (from before 0.0.8)
+# give them known natures, like two real catches would have
+recs = collection.of_kind("pikachu")
+events = []
+for rec, nature in zip(recs, ("Jolly", "Timid")):
+    collection._append({"e": "released", "id": rec["id"]},
+                       {"e": "caught", "id": rec["id"], "pokemon": {"name": "pikachu", "shiny": False,
+                        "caught_at": "2026-11-03T09:41:00+00:00", "nature": nature, "catch_no": 1,
+                        "original_trainer": "Ash", "history": []}})
+print(json.dumps(sorted(r["nature"] for r in collection.of_kind("pikachu"))))""")
+        self.check("older Pokemon get records; a catch's details are stored", seeded == ["Jolly", "Timid"], seeded)
+        r = self.trade("pikachu", "staryu", ash_pick="Timid")
+        ash_left = self.collection("ash", "print(json.dumps([r['nature'] for r in collection.of_kind('pikachu')]))")
+        got = self.collection("misty", "print(json.dumps(collection.of_kind('pikachu')))")
+        self.check("the exact Pokemon chosen is the one that leaves (Timid goes, Jolly stays)",
+                   r["ash"].get("outcome") == "done" and ash_left == ["Jolly"], (r["ash"].get("outcome"), ash_left))
+        rec = got[0] if isinstance(got, list) and got else {}
+        self.check("its story arrives with it: nature, catch date, original trainer, and this trade",
+                   rec.get("nature") == "Timid" and rec.get("original_trainer") == "Ash"
+                   and rec.get("caught_at", "").startswith("2026-11-03")
+                   and (rec.get("history") or [{}])[-1].get("from") == "Ash"
+                   and (rec.get("history") or [{}])[-1].get("to") == "Misty", rec)
+        # cancelled: Jolly must come back exactly as it was
+        self.set_pokedex("ash", ["pikachu 1"], keep_history=True); self.set_pokedex("misty", ["staryu 2"], keep_history=True)
+        before = self.collection("ash", "print(json.dumps(collection.of_kind('pikachu')))")
+        self.trade("pikachu", "staryu", ash_pick="Jolly", ash_fault="cancel_after_confirm", misty_fault="slow_confirm")
+        after = self.collection("ash", "print(json.dumps(collection.of_kind('pikachu')))")
+        self.check("a cancelled trade gives back the very same Pokemon, story intact",
+                   isinstance(before, list) and before == after and after and after[0]["nature"] == "Jolly", (before, after))
+
+        # 5c. Nicknames and met level travel; favourites are refused
+        self.set_pokedex("ash", ["pikachu 1"]); self.set_pokedex("misty", ["staryu 1"])
+        self.collection("ash", """
+with trade_store.pokedex_lock():
+    rec = collection.of_kind("pikachu")[0]
+collection._append({"e": "released", "id": rec["id"]},
+                   {"e": "caught", "id": rec["id"], "pokemon": {"name": "pikachu", "shiny": False,
+                    "caught_at": "2026-11-03T09:41:00+00:00", "nature": "Jolly", "catch_no": 1,
+                    "original_trainer": "Ash", "history": [], "met_level": 7}})
+collection.set_nickname(rec["id"], "Sparky")
+print("{}")""")
+        r = self.trade("pikachu", "staryu", ash_pick="Jolly")
+        got = self.collection("misty", "print(json.dumps(collection.of_kind('pikachu')))")
+        rec = got[0] if isinstance(got, list) and got else {}
+        self.check("a nickname and 'met at Lv' travel with the Pokemon",
+                   r["ash"].get("outcome") == "done" and rec.get("nickname") == "Sparky" and rec.get("met_level") == 7,
+                   (r["ash"].get("outcome"), rec))
+        self.set_pokedex("ash", ["pikachu 1"]); self.set_pokedex("misty", ["staryu 1"])
+        self.collection("ash", """
+with trade_store.pokedex_lock():
+    rec = collection.of_kind("pikachu")[0]
+collection.set_favourite(rec["id"], True)
+print("{}")""")
+        r = self.trade("pikachu", "staryu")
+        self.check("a ♥ favourite can't be traded: refused, nothing changes on either side",
+                   r["ash"].get("outcome") == "failed" and "favourite" in str(r["ash"].get("detail"))
+                   and self.pokedex("ash") == ["pikachu 1"] and self.pokedex("misty") == ["staryu 1"]
+                   and not self.pending("misty"), (r["ash"].get("detail"), self.pokedex("ash"), self.pokedex("misty")))
+
         # 6. Five trades a day
         self.set_pokedex("ash", ["pikachu 10"]); self.set_pokedex("misty", ["staryu 10"])
         outcomes = [self.trade("pikachu", "staryu")["ash"].get("outcome") for _ in range(6)]
         self.check("5 trades allowed per day, the 6th is refused", outcomes == ["done"] * 5 + ["failed"], outcomes)
+        got = self.achievements("ash")
+        self.check("5 trades in a day: 'Regular at the Trade Centre' and 'Busy day at the Trade Centre'",
+                   {"Regular at the Trade Centre", "Busy day at the Trade Centre"} <= got, got)
         self.check("after the limit: exactly 5 traded each way",
                    self.pokedex("ash") == ["pikachu 5", "staryu 5"] and self.pokedex("misty") == ["pikachu 5", "staryu 5"],
                    (self.pokedex("ash"), self.pokedex("misty")))
@@ -438,6 +529,30 @@ class Runner:
         self.check("update backup includes trade data, with the private key still private",
                    os.path.exists(key) and (os.stat(key).st_mode & 0o077) == 0, key)
 
+        # 10b. Nickname and favourite on a real Pokedex entry page
+        self.set_pokedex("ash", ["bulbasaur 1"])
+        f = entry_actions(self)
+        self.check("entry page: f marks a favourite, n sets a nickname, both saved", f.get("ok"), f)
+
+        # 10b2. The settings page
+        f = settings_actions(self)
+        self.check("settings page: untick a generation, keep the last one, 'a' for all, turn details off",
+                   f.get("ok"), f)
+        try:
+            os.unlink(os.path.join(self.app("ash"), "settings.conf"))
+        except FileNotFoundError:
+            pass
+
+        # 10b3. The catch history page
+        f = history_actions(self)
+        self.check("catch history page: h opens it from the Pokedex, b comes back", f.get("ok"), f)
+
+        # 10c. Search in the real Pokedex
+        self.set_pokedex("ash", ash0)
+        f = search_actions(self)
+        self.check("Pokedex search: / jumps to Mewtwo, switches generation for Pichu, handles no match and Esc",
+                   f.get("ok"), f)
+
         # 11. The real screens, two windows, found automatically and by address
         for by_address in (False, True):
             how = "typed address" if by_address else "found on the network"
@@ -447,11 +562,11 @@ class Runner:
                 print(f"SKIP trade screens, {how}: this network doesn't allow discovery (multicast/broadcast)")
                 continue
             ok = (f.get("complete") and f.get("code_a") == f.get("code_b") and f.get("animations")
-                  and f.get("traded_label")
+                  and f.get("traded_label") and f.get("picker") and f.get("trade_search")
                   and f.get("exit_Ash") == 0 and f.get("exit_Misty") == 0
                   and self.pokedex("ash") == ["bulbasaur 1", "pikachu 1", "staryu 1", "eevee (shiny) 1"]
                   and self.pokedex("misty") == ["squirtle 1", "pikachu 1", "staryu 2"])
-            self.check(f"trade screens ({how}): codes match, animations play, Pokedexes updated, entries say 'Traded'", ok,
+            self.check(f"trade screens ({how}): search, pick which one, codes match, animations, Pokedexes, 'Traded'", ok,
                        {k: v for k, v in f.items() if k != "screen"} if ok else f)
         return self.failures
 
@@ -459,6 +574,26 @@ class Runner:
         """The Python poketerm itself uses for this trainer (its own, if installed)."""
         own = os.path.join(self.homes[who], ".local/share/poketerm-python/bin/python3")
         return own if os.access(own, os.X_OK) else sys.executable
+
+    def collection(self, who, code):
+        """Run Python against this trainer's individual-Pokemon records."""
+        r = subprocess.run([self.python(who), "-c", "import collection, json, trade_store\n" + code],
+                           cwd=self.app(who), env=dict(os.environ, HOME=self.homes[who]), capture_output=True, text=True)
+        try:
+            return json.loads(r.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return {"error": r.stderr[-400:]}
+
+    def achievements(self, who):
+        """Run the achievement check for this trainer; return the trading ones they have."""
+        code = ("import achievements as a, json; a.check_pokedex_achievements(); "
+                "print(json.dumps([h['name'] for h in a.load_trainer()['hall_of_fame'] if h['category'] == 'trade']))")
+        r = subprocess.run([self.python(who), "-c", code], cwd=self.app(who),
+                           env=dict(os.environ, HOME=self.homes[who]), capture_output=True, text=True)
+        try:
+            return set(json.loads(r.stdout.strip().splitlines()[-1]))
+        except (ValueError, IndexError):
+            return {"ERROR: " + r.stderr[-300:]}
 
     def pending(self, who):
         r = subprocess.run([self.python(who), "-c", "import trade_store as s; print(len(s.pending_trades()))"],
@@ -545,6 +680,117 @@ class Term:
             Term.ALL.remove(self)
 
 
+def entry_actions(runner):
+    """Open Bulbasaur's entry, press f, then n and type a nickname."""
+    import re
+    found = {}
+    path = os.path.join(runner.app("ash"), "trainer.json")
+    data = json.load(open(path)); data["name"] = "Ash"; json.dump(data, open(path, "w"))
+    A = Term("Ash", runner.homes["ash"])
+    try:
+        A.wait(r"Page 1/"); A.mark(); A.send("\r")
+        A.wait(r"YOUR BULBASAUR"); A.mark(); A.send("f"); A.wait(r"♥ Favourite")
+        A.mark(); A.send("n"); A.wait(r"Nickname:")
+        for ch in "Leafy":
+            A.send(ch)
+        A.pump(0.4); A.mark(); A.send("\r"); A.wait(r'"Leafy"')
+        A.send("b"); A.wait(r"Page 1/"); A.send("q")
+        saved = runner.collection("ash", "print(json.dumps(collection.of_kind('bulbasaur')))")
+        rec = saved[0] if isinstance(saved, list) and saved else {}
+        found["saved"] = {k: rec.get(k) for k in ("nickname", "favourite")}
+        found["ok"] = rec.get("nickname") == "Leafy" and rec.get("favourite") is True
+    except (TimeoutError, OSError) as e:
+        found["error"] = str(e); found["screen"] = A.text()[-1200:]
+    finally:
+        if A in Term.ALL:
+            A.close()
+    return found
+
+
+def settings_actions(runner):
+    """Use the real settings page: untick Gen 1, try to untick the last one, 'a' for all."""
+    found = {}
+    conf = os.path.join(runner.app("ash"), "settings.conf")
+    try:
+        os.unlink(conf)
+    except FileNotFoundError:
+        pass
+    A = Term("Ash", runner.homes["ash"])
+    try:
+        A.wait(r"Page 1/"); A.mark(); A.send("s"); A.wait(r"Catch Pokemon from")
+        A.mark(); A.send("\r"); A.wait(r"Saved")
+        found["gen1_off"] = "generations=2,3,4,5,6,7,8" in open(conf).read()
+        for g in range(2, 8):                         # untick 2..7: only Gen 8 left
+            A.send("\x1b[B"); A.pump(0.15); A.send("\r"); A.pump(0.3)
+        A.mark(); A.send("\x1b[B"); A.pump(0.15); A.send("\r")
+        A.wait(r"At least one generation has to stay on")
+        found["last_kept"] = "generations=8" in open(conf).read()
+        A.mark(); A.send("a"); A.wait(r"All 8 generations on")
+        found["all_on"] = "generations=1,2,3,4,5,6,7,8" in open(conf).read()
+        A.send("\x1b[B"); A.pump(0.15); A.mark(); A.send("\r"); A.wait(r"Saved")
+        found["details_off"] = "system_details=off" in open(conf).read()
+        A.mark(); A.send("b"); A.wait(r"Page 1/"); A.send("q")
+    except (TimeoutError, OSError) as e:
+        found["error"] = str(e); found["screen"] = A.text()[-1500:]
+    finally:
+        if A in Term.ALL:
+            A.close()
+    found["ok"] = all(found.get(k) for k in ("gen1_off", "last_kept", "all_on", "details_off"))
+    return found
+
+
+def history_actions(runner):
+    """Open the real catch history page with h, and come back with b."""
+    import re
+    found = {}
+    A = Term("Ash", runner.homes["ash"])
+    try:
+        A.wait(r"Page 1/"); A.mark(); A.send("h"); A.wait(r"CATCH HISTORY")
+        found["opened"] = True
+        found["content"] = bool(re.search(r"No catch times recorded yet|First catch", A.text()))
+        A.mark(); A.send("b"); A.wait(r"Page 1/"); found["back"] = True
+        A.send("q")
+    except (TimeoutError, OSError) as e:
+        found["error"] = str(e); found["screen"] = A.text()[-1500:]
+    finally:
+        if A in Term.ALL:
+            A.close()
+    found["ok"] = all(found.get(k) for k in ("opened", "content", "back"))
+    return found
+
+
+def search_actions(runner):
+    """Use / in the real Pokedex: jump to Mewtwo, to Pichu in Gen 2, a miss, and Esc."""
+    found = {}
+    A = Term("Ash", runner.homes["ash"])
+    try:
+        A.wait(r"Page 1/")
+        A.mark(); A.send("/"); A.wait(r"Search:")
+        for ch in "mewtwo":
+            A.send(ch)
+        A.pump(0.4); A.mark(); A.send("\r")
+        A.wait(r"> ?150\s+Mewtwo|150\s+Mewtwo"); A.wait(r"Page 10/")
+        found["mewtwo"] = True
+        A.mark(); A.send("/"); A.wait(r"Search:")
+        for ch in "pichu":
+            A.send(ch)
+        A.pump(0.4); A.mark(); A.send("\r"); A.wait(r"GENERATION 2 POKEDEX")
+        found["other_generation"] = True
+        A.mark(); A.send("/"); A.wait(r"Search:")
+        for ch in "zzzz":
+            A.send(ch)
+        A.wait(r"No Pokemon match"); found["no_match"] = True
+        A.mark(); A.send("\x1b"); A.wait(r"GENERATION 2 POKEDEX"); found["escape"] = True
+        A.send("q")
+    except (TimeoutError, OSError) as e:
+        found["error"] = str(e); found["screen"] = A.text()[-1500:]
+    finally:
+        if A in Term.ALL:
+            A.close()
+    found["ok"] = all(found.get(k) for k in ("mewtwo", "other_generation", "no_match", "escape"))
+    return found
+
+
 def ui_trade(runner, by_address):
     """Ash offers Pikachu to Misty through the real screens. Returns a dict of findings."""
     import re
@@ -567,7 +813,7 @@ def ui_trade(runner, by_address):
             A.send(f"127.0.0.1:{addr}"); A.mark(); A.send("\r")
         else:
             # Other trainers on the network may be listed too: move down to Misty.
-            A.wait(r"│ [ >] Misty", 15)
+            A.wait(r"[ >] Misty\b", 15)
             for _ in range(10):
                 if re.search(r"> Misty", A.text()[-4000:]):
                     break
@@ -581,8 +827,17 @@ def ui_trade(runner, by_address):
         B.mark(); A.mark(); B.send("y")
         # 3. Both choose (Ash: 2nd = Pikachu, Misty: 2nd = Staryu)
         A.wait(r"choose below"); B.wait(r"choose below")
-        A.send("\x1b[B"); A.mark(); A.send("\r"); A.wait(r"You give: Pikachu")
-        B.send("\x1b[B"); B.mark(); B.send("\r"); B.wait(r"You give: Staryu")
+        # Both have several of the Pokemon they offer, so each is asked which one to send.
+        A.mark(); A.send("/"); A.wait(r"FIND A POKEMON TO TRADE")        # search for it
+        for ch in "pika":
+            A.send(ch)
+        A.pump(0.4); A.mark(); A.send("\r"); A.wait(r"> Pikachu")
+        found["trade_search"] = True
+        A.mark(); A.send("\r"); A.wait(r"Which Pikachu will you send")
+        found["picker"] = True
+        A.mark(); A.send("\r"); A.wait(r"You give: Pikachu")
+        B.send("\x1b[B"); B.mark(); B.send("\r"); B.wait(r"Which Staryu will you send")
+        B.mark(); B.send("\r"); B.wait(r"You give: Staryu")
         A.wait(r"You get:\s+Staryu"); B.wait(r"You get:\s+Pikachu")
         A.mark(); A.send("y"); B.wait(r"Ash confirmed")
         B.mark(); B.send("y")
@@ -626,9 +881,15 @@ def ui_trade(runner, by_address):
     return found
 
 
+def secrets_hex():
+    import secrets
+    return secrets.token_hex(8)
+
+
 def unit_tests():
     """Protocol checks that don't need two processes."""
     import tempfile
+    import re
     home = tempfile.mkdtemp(prefix="poketerm-unit.")
     os.environ["HOME"] = home
     sys.path.insert(0, os.path.join(REPO, "files", "current"))
@@ -722,6 +983,272 @@ def unit_tests():
     else:
         print("SKIP network detection: this computer has no network")
     disc.close(); listener.close()
+
+    # Individual Pokemon records
+    import collection as col
+    import trade_store as ts2
+    ts2.APP_DIR.mkdir(parents=True, exist_ok=True)
+    (ts2.APP_DIR / "pokedex.txt").write_text("bulbasaur 2\npikachu 1\npikachu (shiny) 1\n")
+    recs = col.reconcile()
+    check("Pokemon from before 0.0.8 appear, one record each", len(recs) == 4 and all(r.get("legacy") for r in recs))
+    (ts2.APP_DIR / "pokedex.txt").write_text("bulbasaur 3\npikachu 1\npikachu (shiny) 1\n")
+    new = col.record_catch("bulbasaur", False, "Ash", "2026-11-25T21:41:00+00:00")
+    check("a catch is recorded with nature, time, trainer and catch number",
+          new["nature"] in col.NATURES and new["original_trainer"] == "Ash" and new["catch_no"] == 3
+          and col.when_text(new["caught_at"]) == "25 Nov 2026, 9:41pm" and col.time_of_day(new["caught_at"]) == "night")
+    check("records match the Pokedex after a catch (no duplicates)", len(col.reconcile()) == 5)
+    (ts2.APP_DIR / "pokedex.txt").write_text("bulbasaur 1\npikachu 1\npikachu (shiny) 1\n")
+    left = [r for r in col.reconcile() if r["name"] == "bulbasaur"]
+    check("removing Pokemon outside poketerm drops records, unknown-date ones first, keeping real catches",
+          len(left) == 1 and left[0].get("nature") == new["nature"] and not left[0].get("legacy"))
+    nasty = {"name": "pikachu", "shiny": False, "nature": "Evil\x1b[2J", "caught_at": "yesterday",
+             "catch_no": "lots", "original_trainer": "Misty\x1b]0;pwned\x07",
+             "history": [{"from": "A\x1b[31m", "to": "B", "date": "2026-11-01"}, "junk", {"date": "x"}], "extra": 1}
+    clean = col.clean_details(nasty, "pikachu", False)
+    check("details from another trainer are cleaned: bad nature/date/number dropped, no terminal codes",
+          clean["nature"] is None and clean["caught_at"] is None and clean["catch_no"] is None
+          and "\x1b" not in json.dumps(clean) and len(clean["history"]) == 1 and "extra" not in clean)
+    check("details for a different Pokemon than the one traded are refused",
+          col.clean_details(dict(nasty, name="mew"), "pikachu", False) is None)
+    nick_ok = col.clean_nickname("Sparky") == "Sparky" and col.clean_nickname("Mr. Bubbles") == "Mr. Bubbles"
+    nick_bad = all(col.clean_nickname(v) is None for v in
+                   ("", "x" * 13, "Spar\x1b[2Jky", "-dash", "emoji🙂", None, 42))
+    check("nicknames: letters/numbers/space . ' - up to 12; anything else refused", nick_ok and nick_bad)
+    (ts2.APP_DIR / "pokedex.txt").write_text("pikachu 2\n")
+    col.reconcile()
+    a = col.record_catch("pikachu", False, "Ash", "2026-11-25T10:00:00+00:00", level=7)
+    (ts2.APP_DIR / "pokedex.txt").write_text("pikachu 3\n")
+    col.reconcile()
+    check("the trainer's level is recorded at catch time ('met at Lv 7')", col.get(a["id"]).get("met_level") == 7)
+    col.set_nickname(a["id"], "Sparky")
+    col.set_favourite(a["id"], True)
+    rec = col.get(a["id"])
+    check("a nickname and a favourite mark are kept", rec.get("nickname") == "Sparky" and rec.get("favourite") is True)
+    try:
+        col.choose(a["id"], "pikachu", False); refused = False
+    except col.FavouriteError:
+        refused = True
+    check("a favourite can't be chosen for a trade", refused)
+    fallback = col.choose(None, "pikachu", False)
+    check("picking 'any' Pikachu never picks the favourite", fallback and fallback["id"] != a["id"])
+    out = col.for_trade(rec)
+    check("its nickname and met level travel in trades, the favourite mark doesn't",
+          out.get("nickname") == "Sparky" and out.get("met_level") == 7 and "favourite" not in out)
+    for r in col.of_kind("pikachu"):
+        col.set_favourite(r["id"], True)
+    try:
+        col.choose(None, "pikachu", False); all_refused = False
+    except col.FavouriteError:
+        all_refused = True
+    check("when they're all favourites, none can be traded", all_refused)
+    col.set_nickname(a["id"], "")
+    check("an empty nickname clears it", col.get(a["id"]).get("nickname") is None)
+    hostile = col.clean_details({"name": "pikachu", "shiny": False, "nickname": "\x1b]0;pwn\x07", "met_level": True},
+                                "pikachu", False)
+    check("a hostile nickname or level from another trainer is dropped",
+          hostile["nickname"] is None and hostile["met_level"] is None)
+    check("catch numbers read naturally", [col.ordinal(n) for n in (1, 2, 3, 4, 11, 12, 13, 21, 22, 101)] ==
+          ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "101st"])
+
+    # Search
+    import search as srch
+    names = []
+    for f in sorted(store.GEN_DIR.glob("gen*_list.txt"), key=lambda p: int(re.sub(r"\D", "", p.name) or 0)):
+        names += f.read_text().split()
+    entries = [{"name": n, "no": i + 1} for i, n in enumerate(names)]
+    top = lambda q: [e["name"] for e in srch.rank(entries, q)[:3]]
+    check("search: 'char' finds Charmander, Charmeleon, Charizard first", top("char") == ["charmander", "charmeleon", "charizard"])
+    check("search: '150' and '#150' find Mewtwo", top("150")[:1] == ["mewtwo"] and top("#150")[:1] == ["mewtwo"])
+    check("search: spaces, hyphens and capitals don't matter (Mr. Mime)",
+          top("mr mime")[:1] == top("Mr-Mime")[:1] == top("mrmime")[:1] == ["mr-mime"])
+    check("search: a word inside the name matches ('mime' -> Mime Jr. and Mr. Mime)", set(top("mime")[:2]) == {"mime-jr", "mr-mime"})
+    check("search: nothing matches nonsense", top("zzzz") == [])
+    check("search: the exact name always comes first ('mew' -> Mew before Mewtwo)", top("mew")[:2] == ["mew", "mewtwo"])
+
+    # Settings
+    import settings as st
+    st.FILE = store.APP_DIR / "settings.conf"
+    check("settings: defaults when there's no file", st.load() == st.DEFAULTS)
+    st.save({"generations": [3, 1], "system_details": False, "animations": False, "update_check": True})
+    got = st.load()
+    check("settings: what's saved is what's loaded",
+          got["generations"] == [1, 3] and got["system_details"] is False and got["animations"] is False
+          and got["update_check"] is True)
+    st.FILE.write_text("generations=0,9\nanimations=sometimes\nsystem_details=off\n")
+    got = st.load()
+    check("settings: invalid values are ignored (defaults used), valid ones kept",
+          got["generations"] == st.ALL_GENERATIONS and got["animations"] is True and got["system_details"] is False)
+    st.save({"generations": []})
+    check("settings: you can never end up with no generations", st.load()["generations"] == st.ALL_GENERATIONS)
+    import trade_ui
+    played = []
+    real = trade_ui.animate_send, trade_ui.animate_receive
+    trade_ui.animate_send = lambda *a: played.append("send")
+    trade_ui.animate_receive = lambda *a: played.append("receive")
+    page = trade_ui.TradePage.__new__(trade_ui.TradePage)
+    page.refresh_items = page.new_achievements = lambda: []
+    flashed = []
+    page.flash = flashed.append
+    result = {"gave": {"name": "pikachu", "shiny": False}, "got": {"name": "staryu", "shiny": False}, "peer": "Misty"}
+    try:
+        for on in (True, False):
+            played.clear()
+            st.save({"animations": on})
+            import contextlib, io
+            with contextlib.redirect_stdout(io.StringIO()):   # it clears the screen
+                page.finish_trade(result)
+            check(f"trade animations {'on' if on else 'off'} in settings: "
+                  f"{'played' if on else 'skipped'}, and the trade still completes",
+                  played == (["send", "receive"] if on else []) and "Trade complete!" in flashed[-1])
+    finally:
+        trade_ui.animate_send, trade_ui.animate_receive = real
+    st.FILE.unlink()
+
+    # Catch history (catch_history.py)
+    import catch_history as ch
+    def ev(kind, name, when=None, shiny=False):
+        p = {"name": name, "shiny": shiny}
+        if when:
+            p["caught_at"] = when
+        return {"e": kind, "id": secrets_hex(), "pokemon": p}
+    special = ({"mewtwo"}, {"mew"}, {"dragonite"})
+    events = [ev("legacy", "rattata"), ev("legacy", "pidgey"),
+              ev("caught", "pidgey", "2026-11-02T23:30:00+00:00"),
+              ev("caught", "rattata", "2026-11-01T22:10:00+00:00"),            # earliest, though logged second
+              ev("caught", "pidgey", "2026-11-02T23:45:00+00:00"),
+              ev("caught", "dragonite", "2026-11-03T08:00:00+00:00"),
+              ev("caught", "mewtwo", "2026-11-04T14:00:00+00:00"),
+              ev("caught", "pidgey", "2026-11-05T01:00:00+00:00"),
+              ev("received", "mew", "2026-11-06T12:00:00+00:00"),              # traded in: not your catch
+              ev("caught", "zubat", "not a time")]                             # unreadable: skipped
+    st_ = ch.stats(events, special)
+    check("history: counts catches with times, and those from before 0.0.8",
+          st_["total"] == 6 and st_["before"] == 2 and st_["days"] == 5)
+    check("history: first and latest catch go by time, not log order",
+          st_["first"][1]["name"] == "rattata" and st_["latest"][1]["name"] == "pidgey")
+    check("history: rarest is Legendary over pseudo-legendary (a traded-in Mythical doesn't count)",
+          st_["rarest"][1]["name"] == "mewtwo" and st_["rarest"][2] == "Legendary")
+    st_ = ch.stats(events + [ev("caught", "caterpie", "2026-11-07T10:00:00+00:00", shiny=True)], special)
+    check("history: a shiny beats a Legendary", st_["rarest"][1]["name"] == "caterpie")
+    st_ = ch.stats(events + [ev("caught", "mew", "2026-11-08T10:00:00+00:00", shiny=True)], special)
+    check("history: a shiny Mythical beats everything", st_["rarest"][2] == "Shiny and Mythical!")
+    st_ = ch.stats(events, special)
+    check("history: busiest day is the day with most catches", str(st_["busiest"][0]) == "2026-11-02" and st_["busiest"][1] == 2)
+    check("history: catches sorted into morning/afternoon/evening/night",
+          st_["parts"] == {"morning": 1, "afternoon": 1, "evening": 0, "night": 4})
+    check("history: 'You're a night-time catcher'", st_["verdict"] == "You're a night-time catcher")
+    few = ch.stats(events[:4], special)
+    check("history: no verdict from too few catches", few["verdict"] is None and few["total"] == 2)
+    tie = ch.stats([ev("caught", "pidgey", f"2026-11-0{d}T{h}:00:00+00:00") for d, h in
+                    ((1, "08"), (2, "09"), (3, "14"), (4, "15"), (5, "18"), (6, "19"))], special)
+    check("history: a tie says you catch at all hours", tie["verdict"] == "You catch at all hours")
+    empty = ch.stats([ev("legacy", "rattata")], special)
+    lines, _info = ch.screen(empty, 46)
+    check("history: nothing recorded yet is explained, not an error",
+          empty["total"] == 0 and any("No catch times recorded yet" in l for l in lines))
+    import re as _re
+    for w in (24, 30, 46):
+        lines, _info = ch.screen(ch.stats(events, special), w)
+        widest = max(len(_re.sub(r"\x1b\[[0-9;]*m", "", l)) for l in lines)
+        check(f"history: the page fits a {w}-wide screen", widest <= w)
+
+    # Moving to a new computer (transfer.py): the parts that guard against bad files
+    import io as _io, tarfile as _tar
+    import transfer as tr
+    tr.SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1}          # quicker, same code paths
+
+    def sealed(members, pw="right-passphrase"):
+        buf = _io.BytesIO()
+        with _tar.open(fileobj=buf, mode="w:gz") as t:
+            for name, data in members:
+                info = _tar.TarInfo(name); info.size = len(data)
+                t.addfile(info, _io.BytesIO(data))
+        return tr.seal(buf.getvalue(), pw)
+
+    def refused(fn):
+        try:
+            fn(); return False
+        except tr.TransferError:
+            return True
+
+    good = {"pokedex.txt": b"pikachu 2\n", "trainer.json": b'{"name": "Ash"}'}
+    payload = tr._bundle(good, "test")
+    got, _m = tr._unbundle(tr.unseal(tr.seal(payload, "right-passphrase"), "right-passphrase"))
+    check("export file: what's sealed comes back exactly", got == good)
+    blob = tr.seal(payload, "right-passphrase")
+    check("export file: a wrong passphrase is refused", refused(lambda: tr.unseal(blob, "wrong-passphrase")))
+    flipped = bytearray(blob); flipped[len(blob) // 2] ^= 1
+    check("export file: a single changed byte is refused", refused(lambda: tr.unseal(bytes(flipped), "right-passphrase")))
+    check("export file: a cut-short copy is refused", refused(lambda: tr.unseal(blob[:-40], "right-passphrase")))
+    evil = sealed([("../../.zshrc", b"rm -rf ~"), ("manifest.json", b"{}")])
+    check("export file: a path outside poketerm's folder is refused, never written",
+          refused(lambda: tr._unbundle(tr.unseal(evil, "right-passphrase"))))
+    lnk = _io.BytesIO()
+    with _tar.open(fileobj=lnk, mode="w:gz") as t:
+        info = _tar.TarInfo("pokedex.txt"); info.type = _tar.SYMTYPE; info.linkname = "/etc/passwd"; t.addfile(info)
+    check("export file: links inside it are refused",
+          refused(lambda: tr._unbundle(tr.unseal(tr.seal(lnk.getvalue(), "pw-pw-pw-pw"), "pw-pw-pw-pw"))))
+    import json as _json, hashlib as _h
+    man = _json.dumps({"format": 1, "files": {"pokedex.txt": _h.sha256(b"mew 1\n").hexdigest()}}).encode()
+    swapped = sealed([("manifest.json", man), ("pokedex.txt", b"mew 99\n")])
+    check("export file: contents that don't match its list are refused",
+          refused(lambda: tr._unbundle(tr.unseal(swapped, "right-passphrase"))))
+    check("export file: a Pokedex with odd lines is refused",
+          refused(lambda: tr._validate({"pokedex.txt": b"pikachu lots\n"})))
+    e1 = {"seq": 1, "event": "commit", "trade_id": "t1", "prev": store.GENESIS}; e1["hash"] = store._entry_hash(e1)
+    e2 = {"seq": 2, "event": "commit", "trade_id": "t2", "prev": e1["hash"]}; e2["hash"] = store._entry_hash(e2)
+    journal = (_json.dumps(e1) + "\n" + _json.dumps(e2) + "\n").encode()
+    check("export file: a sound trade history is accepted (and counted)", tr._check_journal(journal.decode()) == 2)
+    check("export file: an edited trade history is refused",
+          refused(lambda: tr._validate({"pokedex.txt": b"", "trade/trades.log": journal.replace(b'"t1"', b'"t9"')})))
+    ident = store.load_identity()
+    key, crt = store.KEY_FILE.read_bytes(), store.CERT_FILE.read_bytes()
+    check("export file: a matching identity key and certificate are accepted",
+          tr._check_identity(key, crt) == ident.fingerprint)
+    store.KEY_FILE, store.CERT_FILE = store.KEY_FILE.with_name("other.key"), store.CERT_FILE.with_name("other.crt")
+    store._create_identity()
+    other_key = store.KEY_FILE.read_bytes()
+    store.KEY_FILE, store.CERT_FILE = store.KEY_FILE.with_name("identity.key"), store.CERT_FILE.with_name("identity.crt")
+    check("export file: someone else's key with your certificate is refused",
+          refused(lambda: tr._check_identity(other_key, crt)))
+    check("export file: half an identity (key, no certificate) is refused",
+          refused(lambda: tr._validate({"pokedex.txt": b"", "trade/identity.key": key})))
+    os.environ[tr.PASSPHRASE_ENV] = "short"
+    check("export file: a passphrase under 8 characters isn't allowed", refused(lambda: tr._passphrase(confirm=True)))
+    del os.environ[tr.PASSPHRASE_ENV]
+
+    # Trading achievement rules
+    import achievements as ach
+    def t(gave, got, peer="a" * 64, day="2026-11-25", gs=False, rs=False):
+        return {"gave": {"name": gave, "shiny": gs}, "got": {"name": got, "shiny": rs}, "peer": peer, "date": day}
+    check("no trades: no trading achievements", ach.trade_achievements([]) == set())
+    one = ach.trade_achievements([t("pikachu", "eevee")])
+    check("first trade unlocks 'Nice doing business with you' (and nothing hidden)",
+          one == {"Nice doing business with you"})
+    four = [t("pikachu", "eevee", day=f"2026-11-{d:02d}") for d in range(1, 5)]
+    check("4 trades isn't 5", "Regular at the Trade Centre" not in ach.trade_achievements(four))
+    five_days = four + [t("pikachu", "eevee", day="2026-11-05")]
+    got5 = ach.trade_achievements(five_days)
+    check("5 trades unlocks 'Regular at the Trade Centre'", "Regular at the Trade Centre" in got5)
+    check("5 trades on different days isn't 'Busy day'", "Busy day at the Trade Centre" not in got5)
+    check("5 trades in one day unlocks 'Busy day at the Trade Centre'",
+          "Busy day at the Trade Centre" in ach.trade_achievements([t("pikachu", "eevee")] * 5))
+    check("25 and 100 trades unlock 'Swap Shop' and 'Trade Tycoon'",
+          {"Swap Shop", "Trade Tycoon"} <= ach.trade_achievements([t("a", "b", day=str(i)) for i in range(100)])
+          and "Trade Tycoon" not in ach.trade_achievements([t("a", "b", day=str(i)) for i in range(99)]))
+    check("3 different trainers unlocks 'Making friends' (the same one 3 times doesn't)",
+          "Making friends" in ach.trade_achievements([t("a", "b", peer=c * 64) for c in "abc"])
+          and "Making friends" not in ach.trade_achievements([t("a", "b")] * 3))
+    check("receiving a shiny unlocks 'Special Delivery'", "Special Delivery" in ach.trade_achievements([t("a", "b", rs=True)]))
+    check("giving a shiny unlocks 'That's very generous!'",
+          "That's very generous!" in ach.trade_achievements([t("a", "b", gs=True)]))
+    check("receiving a Legendary unlocks 'A Legend Arrives'",
+          "A Legend Arrives" in ach.trade_achievements([t("pikachu", "mewtwo")])
+          and "A Legend Arrives" not in ach.trade_achievements([t("mewtwo", "pikachu")]))
+    check("getting back a Pokemon you traded away unlocks 'Boomerang'",
+          "Boomerang" in ach.trade_achievements([t("staryu", "pikachu"), t("squirtle", "staryu")])
+          and "Boomerang" not in ach.trade_achievements([t("pikachu", "staryu"), t("staryu", "squirtle")]))
+    check("there are exactly 10 trading achievements", len(ach.TRADE_ACHIEVEMENTS) == 10)
 
     # Keys arriving in one burst (a held-down arrow, or arrow then Enter typed
     # fast) must each be read on their own, in the Pokedex as in trading.

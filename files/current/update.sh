@@ -131,12 +131,6 @@ if [[ -n "$from" ]]; then
     exec bash "$from/install.sh" --update
 fi
 
-if [[ "$(conf_get MODE)" == dev && "$force" != true ]]; then
-    echo "This is a dev install linked to $(conf_get SOURCE)."
-    echo "Update it with git there, or run 'poketerm --update --force' to switch to the release build."
-    exit 1
-fi
-
 command -v curl >/dev/null 2>&1 || { echo "Error: curl is required to update."; exit 1; }
 command -v tar  >/dev/null 2>&1 || { echo "Error: tar is required to update."; exit 1; }
 

@@ -202,6 +202,71 @@ SPECIAL_COLLECTIONS = {
     }
 }
 
+# -----------------------
+# Trading achievements
+# -----------------------
+# (name, event) for every trading achievement, in display order. The last four
+# are hidden in the README.
+TRADE_ACHIEVEMENTS = [
+    ("Nice doing business with you", "Completed your first trade"),
+    ("Regular at the Trade Centre", "Completed 5 trades"),
+    ("Swap Shop", "Completed 25 trades"),
+    ("Trade Tycoon", "Completed 100 trades"),
+    ("Making friends", "Traded with 3 different trainers"),
+    ("Busy day at the Trade Centre", "Used all 5 trades in one day"),
+    ("Special Delivery", "Received a Shiny Pokemon in a trade"),
+    ("That's very generous!", "Traded away a Shiny Pokemon"),
+    ("A Legend Arrives", "Received a Legendary Pokemon in a trade"),
+    ("Boomerang", "Got back a Pokemon you once traded away"),
+]
+
+
+def trade_achievements(trades, daily_limit=5):
+    """The trading achievements these completed trades earn, as a set of names.
+    `trades`: oldest first, as from trade_store.completed_trades()."""
+    earned = set()
+    if not trades:
+        return earned
+    count = len(trades)
+    for needed, name in ((1, "Nice doing business with you"), (5, "Regular at the Trade Centre"),
+                         (25, "Swap Shop"), (100, "Trade Tycoon")):
+        if count >= needed:
+            earned.add(name)
+    if len({t["peer"] for t in trades if t.get("peer")}) >= 3:
+        earned.add("Making friends")
+    per_day = {}
+    for t in trades:
+        per_day[t["date"]] = per_day.get(t["date"], 0) + 1
+    if max(per_day.values()) >= daily_limit:
+        earned.add("Busy day at the Trade Centre")
+    if any(t["got"].get("shiny") for t in trades):
+        earned.add("Special Delivery")
+    if any(t["gave"].get("shiny") for t in trades):
+        earned.add("That's very generous!")
+    legendaries = {n.lower() for n in SPECIAL_COLLECTIONS["all_legendaries"]["required"]}
+    if any(t["got"]["name"] in legendaries for t in trades):
+        earned.add("A Legend Arrives")
+    given = set()
+    for t in trades:                                   # received something given away earlier
+        if t["got"]["name"] in given:
+            earned.add("Boomerang")
+            break
+        given.add(t["gave"]["name"])
+    return earned
+
+
+def _completed_trades():
+    """Completed trades from the trade history ([] if this trainer never traded).
+    Only loads the trading code when there's a history, so catching stays fast."""
+    if not (Path.home() / ".local/share/poketerm/trade/trades.log").exists():
+        return []
+    try:
+        import trade_store
+        return trade_store.completed_trades()
+    except Exception:
+        return []
+
+
 def clear():
     sys.stdout.write("\033[2J\033[H\033[3J")
     sys.stdout.flush()
@@ -549,6 +614,16 @@ def _apply_pokedex_achievements(trainer):
             all_achievements = False
 
     # -----------------
+    # Trading
+    # -----------------
+    earned = trade_achievements(_completed_trades())
+    for name, event in TRADE_ACHIEVEMENTS:
+        if name in earned:
+            unlock(trainer, name, event, "trade")
+        elif name not in {a["name"] for a in trainer.get("hall_of_fame", [])}:
+            all_achievements = False
+
+    # -----------------
     # Hall of Fame Induction
     # -----------------
     if all_achievements:
@@ -584,72 +659,57 @@ def centered_line(text="", color=MAGENTA):
     return f"{MAGENTA}║{RESET} {' ' * left_padding}{text}{' ' * right_padding} {MAGENTA}║{RESET}"
 
 def display_hall_of_fame():
+    import device
     check_pokedex_achievements()
     trainer = load_trainer()
     hall = trainer.get("hall_of_fame", [])
+    W = 50
+    GREY, BOLD = "\033[38;5;245m", "\033[1m"
 
-    if hall == []:
-        clear()
-        print(f"{RED}Catch some Pokemon to earn some achievements!{RESET}")
-        print("\nPress any key to return…")
-        readchar.readkey()
-        clear()
-    
-    should_redraw = True
+    categories = {
+        "pokedex": {"name": "Pokedex Milestones", "emoji": "🏆", "color": LAVENDER},
+        "catch": {"name": "Catch Achievements", "emoji": "🔥", "color": YELLOW},
+        "rank": {"name": "Level Milestones", "emoji": "🎓", "color": GREEN},
+        "special": {"name": "Special Collections", "emoji": "🔹", "color": CYAN},
+        "trade": {"name": "Trading Achievements", "emoji": "🤝", "color": ORANGE},
+    }
+    earned = [a for a in hall if "Hall of Fame" not in a["name"]]
 
+    rows, counts = [], []
+    for key, cat in categories.items():
+        items = [a for a in earned if a.get("category") == key]
+        counts.append(f"{cat['emoji']} {len(items):>3}  {cat['name'].split()[0]}")
+        if not items:
+            continue
+        if rows:
+            rows.append("")
+        rows.append(f"{INVERT} {cat['emoji']} {cat['name']} {RESET}")
+        for a in items:
+            rows.append(f"{cat['color']}{BOLD}{a['name']}{RESET}")
+            rows.append(f"{GREY}  {a['event']} · {a['date']}{RESET}")
+    if not rows:
+        rows = ["", f"{RED}{'No achievements yet.':^{W}}{RESET}", "",
+                f"{'Catch some Pokemon to earn some!':^{W}}"]
+
+    info = [f"{BOLD}HALL OF FAME{RESET}", "", f"{len(earned)} achievements", ""] + counts
+    header = [f"{YELLOW}{BOLD}{'🌟 HALL OF FAME 🌟':^{W - 2}}{RESET}", f"{GREY}{'─' * W}{RESET}"]
+    top = 0
     while True:
-        if should_redraw:
-            clear()
-            os.system("clear" if os.name == "posix" else "cls")
-        
-            print(f"{MAGENTA}╔" + "═" * (WIDTH + 2) + f"╗{RESET}")
-            print(centered_line(f"{INVERT}  🌟 HALL OF FAME 🌟  {RESET}"))
-            
-            if not hall:
-                print(line())
-                print(centered_line("No achievements yet."))
-                print(f"{MAGENTA}╚" + "═" * (WIDTH + 2) + f"╝{RESET}")
-                return
-
-            categories = {
-                "pokedex": {"name": "Pokedex Milestones", "emoji": "🏆", "color": LAVENDER},
-                "catch": {"name": "Catch Achievements", "emoji": "🔥", "color": YELLOW},
-                "rank": {"name": "Level Milestones", "emoji": "🎓", "color": GREEN},
-                "special": {"name": "Special Collections", "emoji": "🔹", "color": CYAN},
-            }
-
-            other_achievements = [a for a in hall if "Hall of Fame" not in a["name"]]
-            
-            col_width = 40 
-
-            for cat_key, cat_info in categories.items():
-                cat_achievements = [a for a in other_achievements if a["category"] == cat_key]
-                if not cat_achievements:
-                    continue
-
-                print(dashed_line())
-                print(centered_line(f"{INVERT}  {cat_info['emoji']} {cat_info['name']} {cat_info['emoji']}  {RESET}"))
-                print(line())
-
-                for entry in cat_achievements:
-                    name_part = f"{cat_info['emoji']} {entry['name']}"
-                    desc_part = f"{entry['event']} ({entry['date']})"
-                    
-                    vis_name = get_visible_len(name_part)
-                    name_padding = " " * (col_width - vis_name)
-                    
-                    full_text = f"{cat_info['color']}{name_part}{name_padding} {desc_part}{RESET}"
-                    print(line(full_text))
-            
-            print(dashed_line())
-            print(line("[B] Back"))
-            print(f"{MAGENTA}╚" + "═" * (WIDTH + 2) + f"╝{RESET}")
-
-        key = readchar.readkey().lower()
-
-        if key == "b": 
-            should_redraw = True
+        visible = max(4, device.screen_rows(W, len(rows) + len(header)) - len(header))
+        top = max(0, min(top, len(rows) - visible))
+        shown = rows[top: top + visible]
+        more = f"{GREY}↓ more{RESET}" if top + visible < len(rows) else ""
+        device.show(header + shown, width=W, info=info,
+                    keys=[("↑↓", "Scroll"), ("b", "Back")],
+                    slots=(f"{len(earned)} earned", more and "↓ more"),
+                    lights=(True, bool(earned), bool(earned)), status="Hall of Fame",
+                    title="Hall of Fame")
+        key = device.readkey()
+        if key is None:
+            continue                          # window resized: redraw to fit
+        if key == readchar.key.UP:
+            top -= 1
+        elif key == readchar.key.DOWN:
+            top += 1
+        elif key.lower() in ("b", "q") or key == readchar.key.ENTER:
             break
-        else:
-            should_redraw = False
-            pass

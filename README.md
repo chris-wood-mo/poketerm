@@ -12,7 +12,9 @@ This repository provides a simple service to "catch" Pokemon created from pokemo
 - Persist caught Pokemon to a user pokédex file.
 - Keep per-generation ordering using the generation lists in gen_files/.
 - View a generation-specific catch progress report.
+- Every Pokedex page is shown on a handheld Pokedex drawn in your terminal: a screen for the page, a side panel with details for whatever's selected, and buttons showing the keys. In smaller windows it switches to a compact layout automatically.
 - Trade Pokemon with other trainers on your local network (press `t` in the Pokedex).
+- Every Pokemon you catch has its own story: when it was caught, its nature, which number catch it was, and every trainer it has belonged to.
 
 ## Requirements
 
@@ -58,9 +60,9 @@ source ~/.zshrc
 poketerm --update
 ```
 
-That's it. Your Pokedex and trainer progress are kept (and backed up to `~/.local/share/poketerm/backups` before every update), your `--gen` setting is kept, and the new version is used from the next terminal you open. If an update fails part-way, the previous version is restored automatically.
+That's it. Your Pokedex and trainer progress are kept (and backed up to `~/.local/share/poketerm/backups` before every update), your settings are kept, and the new version is used from the next terminal you open. If an update fails part-way, the previous version is restored automatically.
 
-Poketerm checks for a new version once a day in the background and shows a one-line notice when one is available. Set `POKETERM_NO_UPDATE_CHECK=1` to turn this off.
+Poketerm checks for a new version once a day in the background and shows a one-line notice when one is available. Turn this off on the Pokedex's settings page (`pokedex`, then `s`), or set `POKETERM_NO_UPDATE_CHECK=1`.
 
 ```bash
 poketerm --update --check     # just check whether an update is available
@@ -68,14 +70,27 @@ poketerm --update 0.0.7       # install a specific version (add --force to go ba
 poketerm --update --beta      # try pre-release versions early
 ```
 
-To change which generations you catch, re-run the installer with `--gen`:
-
-```bash
-cd poketerm
-./install.sh --update --gen 2-5
-```
+To change which generations you catch, use the [settings page](#settings) (`pokedex`, then `s`).
 
 > Upgrading from 0.0.6 or earlier? Those versions don't have `poketerm --update` yet, so update once the old way: `cd poketerm && git pull && ./install.sh --update` (no `sudo` needed any more). Your Pokedex, trainer profile, XP and achievements are kept, and your old `~/.zshrc` block is upgraded automatically. After that, `poketerm --update` works.
+
+## Moving to a new computer
+
+Take everything with you (your Pokedex, trainer profile, XP and achievements, every Pokemon's story and nickname, your settings and your trading identity) in one file:
+
+```bash
+# On your old computer
+poketerm --export                 # saves poketerm-<name>-<date>.poketerm here (or: poketerm --export FILE)
+
+# On your new computer: install poketerm, copy the file over, then
+poketerm --import poketerm-ash-2026-11-25.poketerm
+```
+
+- **It's protected by a passphrase** you choose when exporting (at least 8 characters). You'll need it to import. The file holds your trading identity's private key, so keep it private.
+- **Importing checks everything before changing anything**: a wrong passphrase, or a damaged or edited file, is refused and nothing on the new computer changes.
+- **It replaces the new computer's progress.** It shows you what's in the file and what's already there, and asks first (add `--yes` to skip the question). The new computer's previous progress is backed up to `~/.local/share/poketerm/backups`.
+- **Other trainers still know you.** Your trading identity comes with you, along with your trade history and today's trade count. Once you've moved, trade from the new computer only.
+- Finish any trade that's still in progress before exporting. poketerm will tell you if one is.
 
 ## Troubleshooting
 
@@ -86,7 +101,6 @@ Poketerm prints to the terminal when it starts, so with Powerlevel10k's instant 
 ## Development and releasing
 
 ```bash
-./install.sh --dev                # link your install to this checkout: edits apply to the next terminal you open
 poketerm --update --from .        # install this checkout as a normal (copied) build, e.g. to test before release
 ./release.sh 0.0.8-beta.1         # publish a pre-release - only `poketerm --update --beta` users get it
 ./release.sh 0.0.8                # publish a stable release from main - all users are offered it
@@ -139,6 +153,63 @@ poketerm --remove pikachu
 
 When the shell starts, Poketerm will auto-run and keep catching Pokemon in your terminal.
 
+### Pokedex keys
+
+| Key | Does |
+|---|---|
+| `↑` `↓` | Move through the list |
+| `←` `→` | Previous / next page |
+| `Enter` | Open the Pokemon's entry |
+| `/` | **Search** by name or number, across all generations: type `pika`, `mr mime` or `150`, then `Enter` to jump there (`Esc` to cancel) |
+| `p` | Trainer profile |
+| `h` | [Catch history](#catch-history) |
+| `a` | Achievements |
+| `t` | Trading |
+| `s` | Settings |
+| `q` | Quit |
+
+## Catch history
+
+Press `h` in the Pokedex to see your catching habits:
+
+- **First and latest catch**, with the date and time
+- **Rarest catch**: shinies first, then Mythical, Legendary and pseudo-legendary Pokemon, then any you've only caught once
+- **Busiest day**: the day you caught the most
+- **When you catch**: your catches split into morning, afternoon, evening and night, and what that makes you, e.g. *You're a night-time catcher!*
+
+Every Pokemon you catch counts, even ones you've since traded away. Pokemon you received in trades don't count, because someone else caught them. Pokemon caught before poketerm 0.0.8 are included in the total, but their catch times weren't recorded, so they aren't part of the rest.
+
+## Settings
+
+Open the Pokedex (`pokedex`) and press `s`. Move with `↑`/`↓` and press `Enter` (or space) to change a setting; it's saved straight away and applies from the next terminal you open.
+
+| Setting | Does |
+|---|---|
+| **Generations** (Gen 1-8) | Which generations new terminals catch from. At least one has to stay on; `a` turns them all back on |
+| **System details** | Show or hide the system information (OS, host, …) beside the Pokemon when a terminal opens |
+| **Trade animations** | Play the Poke Ball animation when a trade completes, or skip straight to the result |
+| **Daily update check** | Check once a day for a new version of poketerm |
+
+Settings are kept in `~/.local/share/poketerm/settings.conf` and survive updates. `./install.sh --gen 2-5` sets the generations too, and `poketerm --gen 3` catches from Gen 3 for just that one run. If you set generations with `--gen` in an older version, they're moved into the settings automatically when you update.
+
+## Your Pokemon's stories
+
+Every Pokemon you catch is remembered individually. Open one in the Pokedex (`Enter` on it) and use `←`/`→` to step through each one you have, starting at the first. Normal and shiny ones are kept apart: press `s` to switch between them.
+
+- **When it was caught**: the date and time, e.g. *25 Nov 2026, 9:41pm (evening)*
+- **Its nature**: one of 25 (Jolly, Timid, Brave…), given when it's caught, never changes
+- **Catch number**: *your 3rd Pikachu*, or *your very first Pikachu!*
+- **Its trainers**: who originally caught it, and the trade that brought it to you
+- **Met at level**: your trainer level when it was caught, e.g. *met at Lv 7*
+- **Its home region**: Kanto, Johto, Hoenn…
+
+On a Pokemon's page you can also:
+
+- Press `n` to give it a **nickname** (up to 12 letters, numbers, spaces and `.` `'` `-`; leave it empty to clear it). The nickname goes with it if you trade it.
+- Press `f` to mark it as a **♥ favourite**. Favourites can't be traded, so you can't send one away by accident. Press `f` again to unmark it.
+
+Pokemon you caught before poketerm 0.0.8 are all still there, marked *Caught before poketerm 0.0.8*: their dates and natures weren't recorded back then. When you trade, you choose exactly which one to send, and its story goes with it to the other trainer.
+
 ## Trading
 
 Swap Pokemon with a friend on the same network.
@@ -146,7 +217,7 @@ Swap Pokemon with a friend on the same network.
 1. You both open the Pokedex and press `t`. The trade page shows **Trainers nearby**.
 2. Pick your friend and press `Enter` to invite them.
 3. Your friend sees your invite. **Check the 6-digit pairing code is the same on both screens**, then they press `y`.
-4. You each choose the Pokemon you'll give and press `Enter`. You see each other's choice straight away and can change yours until you confirm.
+4. You each choose the Pokemon you'll give and press `Enter` (press `/` to search your Pokemon by name). If you have more than one, pick which one - each shows its nature and when it was caught. You see each other's choice straight away and can change yours until you confirm.
 5. When you're both happy, you each press `y` to confirm.
 6. Your Pokemon is sent off in its Poke Ball, and the one you receive pops out of a Poke Ball.
 
@@ -196,6 +267,21 @@ The list of achievements you can obtain are:
 - Caught a Pokemon 10 times
 - Caught a Pokemon 25 times
 
+**Trading Achievements**
+
+- Complete your first trade
+- Complete 5 trades
+- Complete 25 trades
+- Complete 100 trades
+- Trade with 3 different trainers
+- Use all 5 trades in one day
+- HIDDEN
+- HIDDEN
+- HIDDEN
+- HIDDEN
+
+There are 52 achievements in total for you to unlock. Some have been left hidden purposly so you can unlock them as you continue collecting!
+
 **Level Milestones**
 
 - Reach level 10
@@ -217,8 +303,6 @@ The list of achievements you can obtain are:
 - HIDDEN
 - HIDDEN
 
-There are 42 achievements in total for you to unlock. Some have been left hidden purposly so you can unlock them as you continue collecting!
-
 ## Credits
 
 - All the pokemon designs, names, branding etc. are trademarks of [The Pokemon Company](https://www.pokemon.com/uk)
@@ -232,5 +316,4 @@ There are 42 achievements in total for you to unlock. Some have been left hidden
 
 ## To Do
 
-- A search feature for the pokedex
 - Add Gen 9 to the pokedex, open PR needs to be merged with pokemon-colorscripts

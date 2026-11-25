@@ -528,6 +528,25 @@ def pending_trades():
         return [t["prepared"] for t in _trades(_journal_entries()).values() if t.get("state") == "prepared"]
 
 
+def completed_trades():
+    """Every completed trade, oldest first:
+    [{"gave", "got": {"name", "shiny"}, "peer": fingerprint, "peer_name", "date"}].
+    Read-only; [] if there's no trade history (or it can't be read)."""
+    if not JOURNAL.exists():
+        return []
+    try:
+        with pokedex_lock():
+            trades = _trades(_journal_entries())
+    except (TradeError, OSError):
+        return []
+    done = [t for t in trades.values() if t.get("state") == "committed" and "prepared" in t]
+    done.sort(key=lambda t: t["committed"]["seq"])
+    return [{"gave": t["prepared"]["give"], "got": t["prepared"]["receive"],
+             "peer": t["prepared"]["peer"].get("fingerprint", ""),
+             "peer_name": t["prepared"]["peer"].get("name", ""),
+             "date": t["committed"]["date"]} for t in done]
+
+
 def received_from(name, shiny):
     """Completed trades in which this trainer received `name` (normal or shiny),
     newest first: [{"peer": trainer name, "date": "YYYY-MM-DD"}]. Read-only;
@@ -558,7 +577,17 @@ def history(limit=20):
 # ---------------------------------------------------------------------------
 # Trade steps. Each is idempotent and runs entirely under the Pokedex lock.
 # ---------------------------------------------------------------------------
-def prepare(trade_id, give, receive, peer, terms, signatures):
+def _collection():
+    """The individual-Pokemon records (collection.py). Their details are a bonus:
+    if anything goes wrong with them, the trade itself carries on regardless."""
+    try:
+        import collection
+        return collection
+    except Exception:
+        return None
+
+
+def prepare(trade_id, give, receive, peer, terms, signatures, give_id=None, receive_details=None, me=""):
     """Take `give` out of the Pokedex (escrow) and record the signed terms.
     give/receive: {"name", "shiny"}; peer: {"name", "fingerprint"}."""
     recover()
@@ -580,10 +609,25 @@ def prepare(trade_id, give, receive, peer, terms, signatures):
         if counts.get(key, 0) < 1:
             raise TradeError(f"You no longer have {display(give)} to trade.")
         counts[key] -= 1
+        coll, sent, incoming = _collection(), None, None
+        if coll:
+            try:
+                sent = coll.for_trade(coll.choose(give_id, give["name"], give["shiny"]))
+                incoming = coll.clean_details(receive_details, receive["name"], receive["shiny"])
+            except coll.FavouriteError as e:
+                raise TradeError(str(e))      # favourites are protected: this one stops the trade
+            except Exception:
+                sent = incoming = None
         _stage_pokedex(_render(counts), trade_id, "prepared")
         _journal_append("prepared", trade_id, give=give, receive=receive, peer=peer,
-                        terms=terms, signatures=signatures)
+                        terms=terms, signatures=signatures, sent_pokemon=sent,
+                        receive_details=incoming, me=str(me)[:32])
         _finish_inflight()
+        if coll and sent:
+            try:
+                coll.mark_sent(sent, trade_id, peer.get("name", ""))
+            except Exception:
+                pass
 
 
 def commit(trade_id):
@@ -602,6 +646,14 @@ def commit(trade_id):
         _stage_pokedex(_render(counts), trade_id, "committed")
         _journal_append("committed", trade_id)
         _finish_inflight()
+        coll = _collection()
+        if coll:
+            p = t["prepared"]
+            try:
+                coll.receive(p.get("receive_details"), receive["name"], receive["shiny"], trade_id,
+                             p["peer"].get("name", ""), p.get("me", ""))
+            except Exception:
+                pass
 
 
 def abort(trade_id, reason=""):
@@ -621,6 +673,12 @@ def abort(trade_id, reason=""):
             _stage_pokedex(_render(counts), trade_id, "aborted")
             _journal_append("aborted", trade_id, reason=str(reason)[:200])
             _finish_inflight()
+            coll = _collection()
+            if coll and t["prepared"].get("sent_pokemon"):
+                try:
+                    coll.unsend(t["prepared"]["sent_pokemon"], trade_id)
+                except Exception:
+                    pass
         else:
             _journal_append("aborted", trade_id, reason=str(reason)[:200])
 

@@ -103,18 +103,22 @@ RANK_TIERS = {
 # -----------------------
 # Helpers
 # -----------------------
-def choose_from_list(title, options):
-    print(f"\n{title}")
-    print("-" * len(title))
-    for i, opt in enumerate(options, 1):
-        print(f"{i}) {opt}")
+SETUP_INFO = ["TRAINER SETUP", "", "Answer on the screen", "and press Enter."]
 
+
+def choose_from_list(title, options, header=()):
+    import device
+    error = ""
     while True:
-        choice = input("Select option: ").strip()
-        if choice.isdigit():
-            idx = int(choice) - 1
-            if 0 <= idx < len(options):
-                return options[idx]
+        lines = list(header) + [f"{YELLOW}{title}{RESET}", ""]
+        lines += [f"  {i:>2}) {opt}" for i, opt in enumerate(options, 1)]
+        if error:
+            lines += ["", f"{RED}{error}{RESET}"]
+        choice = device.prompt(lines, "Select option:", info=SETUP_INFO,
+                               slots=("Setup", ""), max_len=3, allowed=str.isdigit).strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(options):
+            return options[int(choice) - 1]
+        error = f"✖ Type a number from 1 to {len(options)}."
 
 def get_pokemon_color_code(pokemon_name: str) -> int:
     name = normalize_name(pokemon_name)
@@ -317,15 +321,19 @@ def build_global_lookup():
     return all_pokemon
 
 def choose_favourite_pokemon(max_dex, all_pokemon_list):
-    print("\nChoose 6 favourite Pokemon")
-    print("• Enter a Pokemon name (e.g. Bulbasaur)")
-    print(f"• Or enter a National Dex number (1–{max_dex})")
-    print("• No duplicates\n")
-
-    favourites = []
-
+    import device
+    favourites, note = [], ""
     while len(favourites) < 6:
-        raw = input(f"Favourite {len(favourites)+1}/6: ").strip()
+        lines = [f"{YELLOW}Choose 6 favourite Pokemon{RESET}", "",
+                 "• Enter a Pokemon name (e.g. Bulbasaur)",
+                 f"• Or a National Dex number (1-{max_dex})", "• No duplicates", ""]
+        for i, dex in enumerate(favourites, 1):
+            name = next(n for d, n in all_pokemon_list if d == dex)
+            lines.append(f"  {GREEN}✔{RESET} {i}) #{dex:03d} {name.title()}")
+        if note:
+            lines += ["", note]
+        raw = device.prompt(lines, f"Favourite {len(favourites)+1}/6:", info=SETUP_INFO,
+                            slots=("Setup", f"{len(favourites)}/6 chosen")).strip()
         if not raw:
             continue
 
@@ -336,19 +344,19 @@ def choose_favourite_pokemon(max_dex, all_pokemon_list):
         elif raw.isdigit():
             dex = int(raw)
             if dex < 1 or dex > max_dex:
-                print(f"  ✖ Dex number must be between 1 and {max_dex}")
+                note = f"{RED}✖ Dex number must be between 1 and {max_dex}{RESET}"
                 continue
         else:
-            print("  ✖ Unknown Pokemon name")
+            note = f"{RED}✖ Unknown Pokemon name{RESET}"
             continue
 
         if dex in favourites:
-            print("  ✖ Pokemon already selected")
+            note = f"{RED}✖ Pokemon already selected{RESET}"
             continue
 
         favourites.append(dex)
         name = next(n for d, n in all_pokemon_list if d == dex)
-        print(f"  ✔ Added #{dex} {name.title()}")
+        note = f"{GREEN}✔ Added #{dex} {name.title()}{RESET}"
 
     return favourites
 
@@ -356,15 +364,15 @@ def choose_favourite_pokemon(max_dex, all_pokemon_list):
 # Trainer Creation
 # -----------------------
 def create_trainer_profile(editing=False):
-    if editing:
-        print("\nEditing profile...")
-    else:
-        print("\nWelcome, Trainer!")
-        print("-----------------")
+    import device
+    header = [f"{YELLOW}{'Editing profile' if editing else 'Welcome, Trainer!'}{RESET}", ""]
 
-    name = ""
+    name, error = "", ""
     while not (name.isalpha() and len(name) <= 12):
-        name = input("Trainer name (letters only): ").strip().title()
+        lines = header + ["What's your name?"] + (["", f"{RED}{error}{RESET}"] if error else [])
+        name = device.prompt(lines, "Trainer name (letters only):", info=SETUP_INFO,
+                             slots=("Setup", ""), max_len=12).strip().title()
+        error = "✖ Letters only, up to 12 of them."
 
     regions = list(HOME_TOWNS.keys())
     region = choose_from_list("Choose your home region", regions)
@@ -465,60 +473,90 @@ def render_trainer_profile(gen_progress):
     else:
         next_lvl_req = (lvl + 1) * 500
         
-    xp_bar_display = bar(current_xp, next_lvl_req, width=25)
+    import device
+    W = 46
+    GREY = "\033[38;5;245m"
+    BOLD = "\033[1m"
 
+    def section_profile():
+        return [
+            f"Name:         {trainer['name']}",
+            f"Region:       {trainer['region']}",
+            f"Home Town:    {trainer['hometown']}",
+            f"Started:      {trainer['created']}",
+            "",
+            f"Level:        {lvl}",
+            f"Progress:     {bar(current_xp, next_lvl_req, width=16)} ",
+            f"              {current_xp}/{next_lvl_req} XP",
+            f"Lifetime XP:  {lifetime_xp:,}",
+            f"Rank:         {rank}",
+        ]
+
+    def section_streaks():
+        return [
+            f"Daily Catch Count:     {daily_catch_count}",
+            f"Current Catch Streak:  {streak_current}",
+            f"Longest Catch Streak:  {streak_longest}",
+            f"Last Catch Date:       {streak_last_date}",
+        ]
+
+    def section_completion():
+        rows = []
+        for gen in sorted(gen_progress):
+            caught, total = gen_progress[gen]
+            done = caught == total and total > 0
+            colour = GREEN if done else YELLOW if caught > 0 else RED
+            rows.append(f"Gen {gen}  {bar(caught, total, width=18)} {colour}{caught:>3}/{total}{' ✔' if done else ''}{RESET}")
+        return rows + ["", f"{GREY}Completed generations: 1 in 10 shiny.{RESET}"]
+
+    def section_favourites():
+        rows = []
+        for i, dex in enumerate(favourites, 1):
+            name = get_pokemon_name(dex)
+            colour = f"\033[48;5;{get_pokemon_color_code(name)}m\033[38;5;16m"
+            rows.append(f"{i})  {colour} {name.title().center(15)} {RESET}  #{dex:03d}")
+        return rows + ["", f"{GREY}Press 1-{len(favourites)} to see one, normal and shiny.{RESET}"] if rows else \
+            [f"{GREY}No favourites yet - press e to choose them.{RESET}"]
+
+    tabs = [("Profile", section_profile), ("Streaks", section_streaks),
+            ("Pokedex", section_completion), ("Favourites", section_favourites)]
+    tab = 0
     should_redraw = True
 
     while True:
         if should_redraw:
-            clear()
-            os.system("clear" if os.name == "posix" else "cls")
+            title, build = tabs[tab]
+            strip = "  ".join(f"{INVERT} {t} {RESET}" if i == tab else f"{GREY}{t}{RESET}"
+                              for i, (t, _) in enumerate(tabs))
+            lines = [f"{YELLOW}{BOLD}{'TRAINER PROFILE':^{W}}{RESET}", strip,
+                     f"{GREY}{'─' * W}{RESET}", ""] + build()
+            # The green display: the trainer summary on the Profile tab only.
+            info = {
+                "Profile": [f"{BOLD}{trainer['name'].upper()}{RESET}", f"Level {lvl}", f"{rank}", "",
+                            f"XP {current_xp}/{next_lvl_req}",
+                            "█" * int(26 * min(current_xp, next_lvl_req) / max(1, next_lvl_req)), "",
+                            f"Streak: {streak_current} day{'s' if streak_current != 1 else ''}"],
+                "Streaks": [f"{BOLD}STREAKS{RESET}", "", "Catch at least one", "Pokemon a day to keep",
+                            "your streak going."],
+                "Pokedex": [f"{BOLD}POKEDEX{RESET}", "", "How much of each", "generation you've caught."],
+                "Favourites": [f"{BOLD}FAVOURITES{RESET}", "", "Your six favourite", "Pokemon. Press 1-6 to",
+                               "see one, normal and", "shiny."],
+            }[title]
+            device.show(lines, width=W, info=info,
+                        keys=[("←→", "Tab"), ("1-6", "Fav"), ("e", "Edit"), ("b", "Back")],
+                        slots=(f"Lv {lvl}", title),
+                        lights=(True, streak_current > 0, True), status=trainer["name"],
+                        title="Trainer Profile")
 
-            print(f"{RED}┌" + "─" * (WIDTH + 2) + f"┐{RESET}")
-            print(line(f"{INVERT}  ✦ TRAINER PROFILE ✦  {RESET}"))
-            print(line())
-            print(line(f"Name:        {trainer['name']}"))
-            print(line(f"Region:      {trainer['region']}"))
-            print(line(f"Home Town:   {trainer['hometown']}"))
-            print(line(f"Started:     {trainer['created']}"))
-            print(line(f"Level:       {lvl}"))
-            print(line(f"Progress:    [{xp_bar_display}] {current_xp}/{next_lvl_req}"))
-            print(line(f"Lifetime XP: {lifetime_xp:,}"))
-            print(line(f"Rank:        {rank}"))
-            print(dashed_line())
-            print(line(f"{INVERT}  ✦ Collection Streaks ✦  {RESET}"))
-            print(line())
-            print(line(f"Daily Catch Count:    {daily_catch_count}"))
-            print(line(f"Current Catch Streak: {streak_current}"))
-            print(line(f"Longest Catch Streak: {streak_longest}"))
-            print(line(f"Last Catch Date:      {streak_last_date}"))
-            print(dashed_line())
-            print(line(f"{INVERT}  ✦ Pokedex Completion ✦  {RESET}"))
-            print(line())
-
-            for gen in sorted(gen_progress):
-                caught, total = gen_progress[gen]
-                status = "✔" if caught == total and total > 0 else ""
-                fill_color = GREEN if caught == total and total > 0 else YELLOW if caught > 0 else RED
-                progress = f"Gen {gen:<2} [{bar(caught, total)}] {fill_color} {caught}/{total} {status}{RESET}"
-                print(line(progress))
-
-            print(line())
-            print(line("Shiny chance for completed pokedex's: 1/10."))
-            print(dashed_line())
-            print(line(f"{INVERT}  ✦ Favourite Pokemon ✦  {RESET}"))
-            print(line())
-            for i, dex in enumerate(favourites, 1):
-                name = get_pokemon_name(dex)
-                bg_val = get_pokemon_color_code(name)
-                ansi = f"\033[48;5;{bg_val}m\033[38;5;16m"
-                print(line(f"{i}) {ansi} {name.title().center(15)} {RESET} (#{dex})"))
-
-            print(dashed_line())
-            print(line("[1-6] View Favourite   [E] Edit Profile   [B] Back"))
-            print(f"{RED}└" + "─" * (WIDTH + 2) + f"┘{RESET}")
-
-        key = readchar.readkey().lower()
+        key = device.readkey()
+        if key is None:
+            should_redraw = True              # window resized: redraw to fit
+            continue
+        if key in (readchar.key.LEFT, readchar.key.RIGHT):
+            tab = (tab + (1 if key == readchar.key.RIGHT else -1)) % len(tabs)
+            should_redraw = True
+            continue
+        key = key.lower()
 
         if key == "b":
             should_redraw = True
@@ -534,7 +572,7 @@ def render_trainer_profile(gen_progress):
             dex = favourites[idx]
             name = get_pokemon_name(dex)
             clear()
-            pokedex.draw_details(name, 1, 1)
+            pokedex.draw_details(name, 1, 1, showcase=True)
             clear()
             should_redraw = True
         else:
