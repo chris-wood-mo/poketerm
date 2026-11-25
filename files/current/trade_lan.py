@@ -15,10 +15,15 @@ and bound to both trainers' keys.
 Everything here is replaceable: a remote transport only needs to provide a
 Channel with the same methods.
 """
+import errno
 import json
+import re
+import shutil
 import socket
 import ssl
 import struct
+import subprocess
+import sys
 import threading
 import time
 
@@ -274,23 +279,71 @@ def local_address():
         s.close()
 
 
+def network_interfaces():
+    """[(name, address, broadcast)] for each IPv4 network this computer is on
+    (not loopback). Read from `ifconfig` (macOS) or `ip` (Linux); falls back to
+    the default route's address."""
+    found = []
+    try:
+        if sys.platform == "darwin" or not shutil.which("ip"):
+            out = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=5).stdout
+            name = None
+            for line in out.splitlines():
+                m = re.match(r"^(\S+?):? flags=", line)
+                if m:
+                    name = m.group(1).rstrip(":")
+                    continue
+                m = re.match(r"^\s+inet (\d+\.\d+\.\d+\.\d+) .*?broadcast (\d+\.\d+\.\d+\.\d+)", line)
+                if m and name:
+                    found.append((name, m.group(1), m.group(2)))
+        else:
+            out = subprocess.run(["ip", "-o", "-4", "addr", "show"], capture_output=True, text=True, timeout=5).stdout
+            for line in out.splitlines():
+                m = re.search(r"^\d+:\s+(\S+)\s+inet (\d+\.\d+\.\d+\.\d+)/\d+ brd (\d+\.\d+\.\d+\.\d+)", line)
+                if m:
+                    found.append(m.groups())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    found = [f for f in found if not f[1].startswith("127.")]
+    if not found:
+        addr = local_address()
+        if not addr.startswith("127."):
+            found = [("default", addr, "255.255.255.255")]
+    return found
+
+
+# Send errors that mean "the operating system won't let us talk to the local
+# network" (on macOS 15+: the terminal app hasn't got Local Network access).
+_BLOCKED = {errno.EHOSTUNREACH, errno.EPERM, errno.EACCES, errno.ENETUNREACH, errno.EADDRNOTAVAIL}
+
+
 class Discovery:
-    """Announces us and tracks other trainers with their trade page open."""
+    """Announces us and tracks other trainers with their trade page open.
+
+    Announcements go out once a second on every network the computer is on
+    (multicast and subnet broadcast). When we hear a trainer we answer them
+    directly, so discovery works even if only one direction gets through.
+    """
 
     def __init__(self, identity, name, port):
         self.identity = identity
         self.name = proto.clean_name(name)
         self.port = port
-        self.peers = {}                  # fingerprint -> {name, host, port, seen}
+        self.peers = {}                  # fingerprint -> {name, host, port, seen, fp}
+        self._replied = {}               # host -> when we last answered it directly
         self._lock = threading.Lock()
         self._stop = threading.Event()
-        self.listening = True
+        self.started = time.monotonic()
+        self.interfaces = []
+        self.sent_ok = 0
+        self.send_errors = {}            # errno -> count (latest round)
         self._send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
         self._send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
         self._send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         try:
             self._recv_sock = self._make_receiver()
+            self.listening = True
         except OSError:
             self._recv_sock = None
             self.listening = False
@@ -305,24 +358,50 @@ class Discovery:
         if hasattr(socket, "SO_REUSEPORT"):
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         s.bind(("", DISCOVERY_PORT))
-        mreq = struct.pack("4s4s", socket.inet_aton(DISCOVERY_GROUP), socket.inet_aton("0.0.0.0"))
-        s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
         s.settimeout(0.5)
         return s
 
-    def _beacon(self):
+    def _join_groups(self):
+        """Listen for multicast announcements on every network, not just the default one."""
+        if not self._recv_sock:
+            return
+        for addr in ["0.0.0.0"] + [i[1] for i in self.interfaces]:
+            mreq = struct.pack("4s4s", socket.inet_aton(DISCOVERY_GROUP), socket.inet_aton(addr))
+            try:
+                self._recv_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            except OSError:
+                pass                     # already joined, or that network can't multicast
+
+    def _beacon(self, reply=False):
         return json.dumps({"app": "poketerm-trade", "v": proto.PROTOCOL_VERSION, "name": self.name,
-                           "fp": self.identity.fingerprint, "port": self.port, "ts": int(time.time())},
-                          separators=(",", ":")).encode()
+                           "fp": self.identity.fingerprint, "port": self.port, "ts": int(time.time()),
+                           "reply": reply}, separators=(",", ":")).encode()
+
+    def _send(self, data, target, errors):
+        try:
+            self._send_sock.sendto(data, target)
+            return True
+        except OSError as e:
+            errors[e.errno] = errors.get(e.errno, 0) + 1
+            return False
 
     def _beacon_loop(self):
+        last_scan = 0
         while not self._stop.is_set():
-            data = self._beacon()
-            for target in ((DISCOVERY_GROUP, DISCOVERY_PORT), ("255.255.255.255", DISCOVERY_PORT)):
+            if time.monotonic() - last_scan > 10:        # Wi-Fi changes, VPNs come and go
+                self.interfaces = network_interfaces()
+                self._join_groups()
+                last_scan = time.monotonic()
+            data, ok, errors = self._beacon(), 0, {}
+            for _, addr, broadcast in self.interfaces:
                 try:
-                    self._send_sock.sendto(data, target)
+                    self._send_sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(addr))
                 except OSError:
                     pass
+                ok += self._send(data, (DISCOVERY_GROUP, DISCOVERY_PORT), errors)
+                ok += self._send(data, (broadcast, DISCOVERY_PORT), errors)
+            ok += self._send(data, ("255.255.255.255", DISCOVERY_PORT), errors)
+            self.sent_ok, self.send_errors = ok, errors
             self._stop.wait(BEACON_INTERVAL)
 
     def _listen_loop(self):
@@ -349,6 +428,13 @@ class Discovery:
                     continue
                 self.peers[b["fp"]] = {"name": proto.clean_name(b.get("name")), "host": host,
                                        "port": b["port"], "seen": time.monotonic(), "fp": b["fp"]}
+                # Answer directly (rate-limited), so they find us even if our
+                # broadcasts don't reach them.
+                due = b.get("reply") is not True and time.monotonic() - self._replied.get(host, 0) > 2
+                if due:
+                    self._replied[host] = time.monotonic()
+            if due:
+                self._send(self._beacon(reply=True), (host, DISCOVERY_PORT), {})
 
     def nearby(self):
         """Trainers seen in the last few seconds, sorted by name."""
@@ -357,6 +443,12 @@ class Discovery:
             for fp in [fp for fp, p in self.peers.items() if now - p["seen"] > PEER_EXPIRY]:
                 del self.peers[fp]
             return sorted((dict(p) for p in self.peers.values()), key=lambda p: (p["name"].lower(), p["fp"]))
+
+    def blocked(self):
+        """True if the operating system refused every announcement we tried
+        to send (e.g. macOS Local Network access is off for this terminal)."""
+        return (time.monotonic() - self.started > 2 and self.sent_ok == 0
+                and any(e in _BLOCKED for e in self.send_errors))
 
     def close(self):
         self._stop.set()

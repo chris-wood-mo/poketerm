@@ -687,8 +687,7 @@ class TradePage:
         peers = self.discovery.nearby()
         self.peer_cursor = max(0, min(self.peer_cursor, len(peers) - 1))
         if not peers:
-            s.row(f"{GREY}Looking for trainers on your network...{RESET}")
-            s.row(f"{GREY}Ask them to open their Pokedex and press t.{RESET}")
+            self.discovery_help(s)
         for i, p in enumerate(peers[:PAGE_SIZE]):
             known = store.known_trainer(p["fp"])
             tag = f"{GREEN}(traded before){RESET}" if known else (
@@ -702,6 +701,30 @@ class TradePage:
         s.row(f"{GREY}Not listed? Press c to type an address.{RESET}")
         s.row(f"{GREY}Your address: {self.address_text}{RESET}")
         self.footer(s, f"{GREEN}Enter{RESET} = Invite  {GREEN}c{RESET} = Enter address  {YELLOW}b{RESET} = Back")
+
+    def discovery_help(self, s):
+        """Why nobody's listed yet, and what to do about it."""
+        d = self.discovery
+        if d.blocked():
+            if sys.platform == "darwin":
+                app = {"Apple_Terminal": "Terminal", "iTerm.app": "iTerm", "vscode": "Visual Studio Code",
+                       "WarpTerminal": "Warp", "ghostty": "Ghostty"}.get(os.environ.get("TERM_PROGRAM", ""),
+                                                                         "your terminal app")
+                s.wrap(f"macOS is blocking {app} from your local network, so nobody can see you. "
+                       f"Turn it on in System Settings > Privacy & Security > Local Network, "
+                       f"then open this page again.", RED)
+            else:
+                s.wrap("Your system is blocking poketerm from sending on the local network "
+                       "(a firewall?), so nobody can see you.", RED)
+            return
+        nets = ", ".join(f"{n} {a}" for n, a, _ in d.interfaces[:2]) or "no network found"
+        s.row(f"{GREY}Looking for trainers on your network ({nets})...{RESET}")
+        s.row(f"{GREY}Ask them to open their Pokedex and press t.{RESET}")
+        if time.monotonic() - d.started > 10:
+            s.wrap("Still nobody? Check you're on the same Wi-Fi. Guest and office networks often hide "
+                   "devices from each other; press c to type their address instead. On a Mac, both of "
+                   "you may need to allow your terminal app in System Settings > Privacy & Security > "
+                   "Local Network.", YELLOW)
 
     def draw_address(self, s):
         s.row(f"{YELLOW}Connect by address{RESET}")

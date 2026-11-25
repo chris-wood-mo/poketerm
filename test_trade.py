@@ -271,6 +271,15 @@ class Runner:
         self.check("both Pokedex checksums are valid after the trade", self.hash_ok("ash") and self.hash_ok("misty"))
         rc, out = self.catch("ash")
         self.check("catching still works after a trade", rc == 0 and "modified outside" not in out, out[-300:])
+        # The Staryu Ash just received (his only one) can be traded on straight away.
+        before_catch = [l for l in self.pokedex("ash") if not l.startswith("staryu ")]
+        self.set_pokedex("ash", ["bulbasaur 1", "pikachu 1", "staryu 1"], keep_history=True)
+        self.set_pokedex("misty", ["squirtle 1", "pikachu 1", "staryu 2"], keep_history=True)
+        r = self.trade("staryu", "squirtle")
+        self.check("a Pokemon received in a trade can be traded on",
+                   r["ash"].get("outcome") == "done" and "staryu 1" not in self.pokedex("ash")
+                   and "squirtle 1" in self.pokedex("ash") and "staryu 3" in self.pokedex("misty"),
+                   (r["ash"].get("outcome"), self.pokedex("ash"), self.pokedex("misty")))
 
         # 2. Trading away the last one removes it; shiny stays shiny
         self.set_pokedex("ash", ash0); self.set_pokedex("misty", misty0)
@@ -431,7 +440,7 @@ class Runner:
             how = "typed address" if by_address else "found on the network"
             self.set_pokedex("ash", ash0); self.set_pokedex("misty", misty0)
             f = ui_trade(self, by_address)
-            if not by_address and "error" in f and "> Misty" in f["error"]:
+            if not by_address and "[ >] Misty" in f.get("error", ""):     # Misty never showed up at all
                 print(f"SKIP trade screens, {how}: this network doesn't allow discovery (multicast/broadcast)")
                 continue
             ok = (f.get("complete") and f.get("code_a") == f.get("code_b") and f.get("animations")
@@ -507,16 +516,34 @@ class Term:
         os.write(self.fd, keys.encode())
 
     def close(self):
+        """Stop the window. Our end of its terminal is closed *before* waiting:
+        a process can't finish exiting while its screen output is unread, so
+        waiting first could hang forever. Never waits more than 5 seconds."""
         try:
             os.kill(self.pid, 9)
-            os.waitpid(self.pid, 0)
         except OSError:
             pass
-        Term.ALL.remove(self)
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+        end = time.time() + 5
+        while time.time() < end:
+            try:
+                if os.waitpid(self.pid, os.WNOHANG)[0]:
+                    break
+            except ChildProcessError:
+                break
+            time.sleep(0.05)
+        if self in Term.ALL:
+            Term.ALL.remove(self)
 
 
 def ui_trade(runner, by_address):
     """Ash offers Pikachu to Misty through the real screens. Returns a dict of findings."""
+    import re
     found = {}
     for who, name in (("ash", "Ash"), ("misty", "Misty")):
         path = os.path.join(runner.app(who), "trainer.json")
@@ -538,7 +565,13 @@ def ui_trade(runner, by_address):
             A.mark(); A.send("c"); A.wait(r"Connect by address")
             A.send(f"127.0.0.1:{addr}"); A.mark(); A.send("\r")
         else:
-            A.wait(r"> Misty", 15)
+            # Other trainers on the network may be listed too: move down to Misty.
+            A.wait(r"│ [ >] Misty", 15)
+            for _ in range(10):
+                if re.search(r"> Misty", A.text()[-4000:]):
+                    break
+                A.mark(); A.send("\x1b[B"); A.pump(0.6)
+            A.wait(r"> Misty", 5)
             A.mark(); A.send("\r")
         found["code_a"] = A.wait(r"Pairing code: (\d{3} \d{3})").group(1)
         B.wait(r"Ash wants to trade with you"); B.wait(r"offering: Pikachu")
@@ -647,6 +680,31 @@ def unit_tests():
         check("a signature doesn't verify with another trainer's identity", not store.verify(ident_c.cert_pem, data, sig_o))
     else:
         print("SKIP crypto interoperability: needs both cryptography and the openssl command")
+
+    # You can't trade with yourself: you never see your own announcements,
+    # and connecting to your own trade port is refused.
+    import trade_lan as lan
+    os.makedirs(store.TRADE_DIR, exist_ok=True)
+    for n in (store.KEY_FILE, store.CERT_FILE):
+        if n.exists():
+            n.unlink()
+    me = store.load_identity()
+    listener = lan.Listener(me, lambda ch: ch.close(), host="127.0.0.1")
+    disc = lan.Discovery(me, "Ash", listener.port)
+    time.sleep(2.5)
+    check("you never appear in your own list of nearby trainers",
+          all(p["fp"] != me.fingerprint for p in disc.nearby()))
+    try:
+        lan.connect(me, "127.0.0.1", listener.port, timeout=5)
+        check("connecting to your own trade page is refused", False)
+    except (lan.ChannelClosed, OSError):
+        check("connecting to your own trade page is refused", True)
+    if disc.interfaces:
+        check("finds this computer's networks to announce on",
+              all(len(i) == 3 and not i[1].startswith("127.") for i in disc.interfaces))
+    else:
+        print("SKIP network detection: this computer has no network")
+    disc.close(); listener.close()
 
     # Keys arriving in one burst (a held-down arrow, or arrow then Enter typed
     # fast) must each be read on their own, in the Pokedex as in trading.
