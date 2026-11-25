@@ -351,7 +351,7 @@ printf 'animations=off\n' > "$APP/settings.conf"
 x_dir="$SANDBOX/moving"; mkdir -p "$x_dir"; x_file="$x_dir/me.poketerm"
 poketerm_cmd POKETERM_PASSPHRASE="$POKETERM_PASSPHRASE" -- --export "$x_file"
 eq    "export succeeds" "$?" "0"
-check "...the file is private to you (0600)" bash -c '[[ "$(stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1")" == 600 ]]' _ "$x_file"
+check "...the file is private to you (0600)" bash -c '[[ "$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1")" == 600 ]]' _ "$x_file"
 check "...and nothing in it is readable without the passphrase" bash -c '! grep -qa "pikachu\|PRIVATE KEY\|tester" "$1"' _ "$x_file"
 poketerm_cmd POKETERM_PASSPHRASE="$POKETERM_PASSPHRASE" -- --export "$x_file"
 check "an export never overwrites an existing file" bash -c '[[ $1 != 0 ]] && grep -q "already exists" "$2"' _ "$?" "$LAST_OUT"
@@ -382,7 +382,7 @@ done
 # after the Pokedex was edited by hand earlier in these tests.)
 check "...every Pokemon's story arrives unchanged (pokemon.log)" \
     bash -c '[[ "$(head -c "$(wc -c < "$1")" "$2")" == "$(cat "$1")" ]]' _ "$APP/pokemon.log" "$N_APP/pokemon.log"
-check "...the private key stays private (0600)" bash -c '[[ "$(stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1")" == 600 ]]' _ "$N_APP/trade/identity.key"
+check "...the private key stays private (0600)" bash -c '[[ "$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1")" == 600 ]]' _ "$N_APP/trade/identity.key"
 check "...the new computer's own progress was backed up first" \
     bash -c 'f=$(ls -d "$1"/backups/*-before-import 2>/dev/null | head -1) && [[ "$(cat "$f/pokedex.txt")" == "$2" ]]' _ "$N_APP" "$n_before"
 n_dex="$(cat "$N_APP/pokedex.txt")"; n_run
