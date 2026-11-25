@@ -528,6 +528,26 @@ def pending_trades():
         return [t["prepared"] for t in _trades(_journal_entries()).values() if t.get("state") == "prepared"]
 
 
+def received_from(name, shiny):
+    """Completed trades in which this trainer received `name` (normal or shiny),
+    newest first: [{"peer": trainer name, "date": "YYYY-MM-DD"}]. Read-only;
+    returns [] if there's no trade history (or it can't be read)."""
+    if not JOURNAL.exists():
+        return []
+    try:
+        with pokedex_lock():
+            trades = _trades(_journal_entries())
+    except (TradeError, OSError):
+        return []
+    found = []
+    for t in trades.values():
+        got = t.get("prepared", {}).get("receive") or {}
+        if t.get("state") == "committed" and got.get("name") == name and bool(got.get("shiny")) == bool(shiny):
+            found.append((t["committed"]["seq"], {"peer": t["prepared"]["peer"].get("name") or "Trainer",
+                                                  "date": t["committed"]["date"]}))
+    return [f for _, f in sorted(found, key=lambda x: x[0], reverse=True)]
+
+
 def history(limit=20):
     with pokedex_lock():
         done = [t for t in _trades(_journal_entries()).values() if t.get("state") == "committed"]

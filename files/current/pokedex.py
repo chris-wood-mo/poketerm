@@ -228,6 +228,15 @@ def draw_details(name, has_normal, has_shiny):
     box_width = 80
     inner = box_width - 2
 
+    # Trades this Pokemon came from, per variant (shown under the sprite label).
+    traded = {}
+    for variant in ("normal", "shiny"):
+        try:
+            import trade_store
+            traded[variant] = trade_store.received_from(name, variant == "shiny")
+        except Exception:
+            traded[variant] = []      # trade history is optional: never break this page
+
     def hr(): print(f"{RED}┌{'─'*inner}┐{RESET}")
     def mid(): print(f"{RED}├{'─'*inner}┤{RESET}")
 
@@ -253,6 +262,22 @@ def draw_details(name, has_normal, has_shiny):
             sprite_label = f"Sprite: {current.title()}"
             pad = (inner - len(sprite_label)) // 2
             print(f"{RED}│{RESET}{' '*pad}{YELLOW}{sprite_label}{RESET}{' '*(inner-len(sprite_label)-pad)}{RED}│{RESET}")
+            received = traded.get(current) or []
+            if received:
+                latest = received[0]
+                try:
+                    from datetime import date as _date
+                    d = _date.fromisoformat(latest["date"])
+                    when = f"{d.day} {d.strftime('%b %Y')}"
+                except (ValueError, KeyError):
+                    when = latest.get("date", "")
+                if len(received) == 1:
+                    line = f"Traded: received from {latest['peer']} on {when}"
+                else:
+                    line = f"Traded: received in {len(received)} trades, latest from {latest['peer']} on {when}"
+                line = line[:inner]
+                pad = (inner - len(line)) // 2
+                print(f"{RED}│{RESET}{' '*pad}{GREEN}{line}{RESET}{' '*(inner-len(line)-pad)}{RED}│{RESET}")
             mid()
 
             for line in sprites.get(current, []):

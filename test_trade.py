@@ -447,10 +447,11 @@ class Runner:
                 print(f"SKIP trade screens, {how}: this network doesn't allow discovery (multicast/broadcast)")
                 continue
             ok = (f.get("complete") and f.get("code_a") == f.get("code_b") and f.get("animations")
+                  and f.get("traded_label")
                   and f.get("exit_Ash") == 0 and f.get("exit_Misty") == 0
                   and self.pokedex("ash") == ["bulbasaur 1", "pikachu 1", "staryu 1", "eevee (shiny) 1"]
                   and self.pokedex("misty") == ["squirtle 1", "pikachu 1", "staryu 2"])
-            self.check(f"trade screens ({how}): codes match, animations play, both Pokedexes updated", ok,
+            self.check(f"trade screens ({how}): codes match, animations play, Pokedexes updated, entries say 'Traded'", ok,
                        {k: v for k, v in f.items() if k != "screen"} if ok else f)
         return self.failures
 
@@ -592,8 +593,20 @@ def ui_trade(runner, by_address):
             t.wait(r"Trade complete!", 45)
         A.wait(r"Trades left today: 4/5")
         found["complete"] = True
+        # The received Pokemon's Pokedex entry says who it came from.
+        for t, dex_no, other in ((A, 120, "Misty"), (B, 25, "Ash")):
+            t.mark(); t.send("q"); t.wait(r"Page 1/")
+            index = dex_no - 1
+            for _ in range(index // 15):
+                t.send("\x1b[C"); t.pump(0.15)
+            for _ in range(index % 15):
+                t.send("\x1b[B"); t.pump(0.1)
+            t.mark(); t.send("\r")
+            t.wait(rf"Traded: received from {other} on \d+ \w+ \d{{4}}")
+            t.mark(); t.send("x"); t.wait(r"Page \d+/")
+        found["traded_label"] = True
         for t in (A, B):
-            t.mark(); t.send("q"); t.wait(r"Page 1/"); t.send("q")
+            t.mark(); t.send("q")
         for t in (A, B):
             end = time.time() + 10
             while time.time() < end:
