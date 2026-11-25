@@ -1,14 +1,10 @@
 # poketerm
 
-Linux collectable terminal Pokédex that captures sprites from the external tool `pokemon-colorscripts`.
+Collectable terminal Pokedex that captures sprites from the external tool `pokemon-colorscripts`.
 
-This repository provides a simple workflow to "catch" Pokemon created from pokemon-colorscripts, keep a persistent pokédex, and view per-generation progress.
+This repository provides a simple service to "catch" Pokemon created from pokemon-colorscripts, keep a persistent pokedex, and view per-generation progress.
 
-
-
-https://github.com/user-attachments/assets/9277514e-d871-4d28-a3ae-59980b39fec3
-
-
+<https://github.com/user-attachments/assets/9277514e-d871-4d28-a3ae-59980b39fec3>
 
 ## Features
 
@@ -19,117 +15,129 @@ https://github.com/user-attachments/assets/9277514e-d871-4d28-a3ae-59980b39fec3
 
 ## Requirements
 
-- Homebrew
-- Python3
-- Zsh
-- readchar (Can be installed via `pip3 install -r requirements.txt`)
-- pokemon-colorscripts (installed by the included installer via Homebrew if missing)
-- hyfetch (installed by the included installer via Homebrew if missing)
+- macOS or Linux
+- zsh
+- python3
+- Optional: [fastfetch](https://github.com/fastfetch-cli/fastfetch)
 
 ## Installation
 
-To install for the first time run:
+```bash
+git clone https://github.com/chris-wood-mo/poketerm.git
+cd poketerm
+./install.sh
+source ~/.zshrc
+```
 
-1. Run the installer:
+For specific generations, default is 1-8:
 
-   ```/bin/bash
-   sudo ./install.sh
-   ```
+```bash 
+git clone https://github.com/chris-wood-mo/poketerm.git
+cd poketerm
+./install.sh --gen 1
+source ~/.zshrc
+```
 
-   Or for installing and using just a specific generation, default is 1-8: 
-   ```
-   ```/bin/bash
-   sudo ./install.sh --gen 1 or sudo ./install.sh --gen 2-5
-   ```
+```bash
+git clone https://github.com/chris-wood-mo/poketerm.git
+cd poketerm
+./install.sh --gen 2-5
+source ~/.zshrc
+```
 
-This will:
+## Update
 
-- Copy generation lists to $HOME/.local/share/poketerm/gen_files
-- Copy cache api and sprite data to $HOME/.local/share/poketerm/cache
-- Install or link the `pokedex` helper script to /usr/local/bin/pokedex and other helpers needed to $HOME/.local/share/poketerm/
-- Install the poketerm shell helper
-- Add the poketerm prompt script into your ~/.zshrc (backups ~/.zshrc to poketerm/zshrc.backup)
+```bash
+poketerm --update
+```
 
-## Updating
+That's it. Your Pokedex and trainer progress are kept (and backed up to `~/.local/share/poketerm/backups` before every update), your `--gen` setting is kept, and the new version is used from the next terminal you open. If an update fails part-way, the previous version is restored automatically.
 
-Updating poketerm will not lose any of your existing pokedex. Pull changes and run the installer with the update flag:
+Poketerm checks for a new version once a day in the background and shows a one-line notice when one is available. Set `POKETERM_NO_UPDATE_CHECK=1` to turn this off.
 
-1. Run the installer:
+```bash
+poketerm --update --check     # just check whether an update is available
+poketerm --update 0.0.7       # install a specific version (add --force to go back to an older one)
+poketerm --update --beta      # try pre-release versions early
+```
 
-   ```/bin/bash
-   git pull origin main
-   sudo ./install.sh --update
-   ```
+To change which generations you catch, re-run the installer with `--gen`:
 
-This will:
+```bash
+cd poketerm
+./install.sh --update --gen 2-5
+```
 
-- Run any necessary migrations updater
+> Upgrading from 0.0.6 or earlier? Those versions don't have `poketerm --update` yet, so update once the old way: `cd poketerm && git pull && ./install.sh --update` (no `sudo` needed any more). Your Pokedex, trainer profile, XP and achievements are kept, and your old `~/.zshrc` block is upgraded automatically. After that, `poketerm --update` works.
 
-Current Update Paths:
+## Troubleshooting
 
-- 0.0.1 -> 0.0.2
-- 0.0.2 -> 0.0.3
-- 0.0.3 -> 0.0.4: Note after this update to use a specific generation of pokemon you will need to update your zshrc from poketerm -> poketerm --gen 1 or poketerm --gen 2-5.
-- 0.0.4 -> 0.0.5: Note you may need to install the readchar python package, this can be done via `pip3 install -r requirements.txt`.
-- 0.0.5 -> 0.0.6
+**Powerlevel10k shows "Console output during zsh initialization detected"**
 
-Upgrade Paths Dropped in Next Release:
-- 0.0.1 -> 0.0.2
-- 0.0.2 -> 0.0.3
+Poketerm prints to the terminal when it starts, so with Powerlevel10k's instant prompt its block in `~/.zshrc` must come *before* the instant-prompt block. The installer puts it there automatically - just update (`poketerm --update`, or `./install.sh --update` on 0.0.6 and earlier). To fix it by hand, move everything between `# >>> POKETERM SCRIPT BEGIN >>>` and `# <<< POKETERM SCRIPT END <<<` above the line `# Enable Powerlevel10k instant prompt`.
+
+## Development and releasing
+
+```bash
+./install.sh --dev                # link your install to this checkout: edits apply to the next terminal you open
+poketerm --update --from .        # install this checkout as a normal (copied) build, e.g. to test before release
+./release.sh 0.0.8-beta.1         # publish a pre-release - only `poketerm --update --beta` users get it
+./release.sh 0.0.8                # publish a stable release from main - all users are offered it
+./release.sh 0.0.8 --dry-run      # run every check (syntax + the full test suite) without publishing
+./test.sh                         # run the end-to-end tests in a throwaway HOME (-v for details)
+```
+
+`release.sh` checks the version is newer than the last release, the tree is clean, and a fresh install catches a Pokemon and earns XP, then bumps `VERSION`, tags, pushes and creates the GitHub release (needs the [GitHub CLI](https://cli.github.com/)). The version lives only in the `VERSION` file.
+
+## Remove
+
+```bash
+cd poketerm
+./install.sh --uninstall
+```
+
+This removes the Poketerm install you will need to remove the zshrc entry manually.
 
 ## Usage
 
-- Run the capture script (installed as `/usr/local/bin/pokedex` by the installer) to view your stored pokédex per generation:
-  pokedex [GEN_NUM 1-8]
+```bash
+# Open the default Pokedex view
+pokedex
 
-  Example:
-  - `pokedex` (defaults to generation 1)
-  - `pokedex 3` (shows generation 3 progress)
-  - `pokedex -h/--help/help` (shows help)
+# Open a specific generation in the Pokedex
+pokedex 3
 
-- Navigate from the pokedex to either of the Trainer Profile by pressing `p` or Achievements pages by pressing `a`
+# Show the Pokedex help
+pokedex --help
 
-- The capture behavior appended into your shell (see ~/.zshrc) hooks into `pokemon-colorscripts -r 1-8` to display a sprite and will:
-  - Add the Pokemon name to the persistent pokedex file (if not already present).
-  - Mark random 1-in-4096 encounters as shiny.
+# Run Poketerm manually (default generation range)
+poketerm
 
-## Files of interest
+# Run a specific generation or range manually
+poketerm --gen 1
+poketerm --gen 2-5
 
-- Installer: install.sh — sets up files and links the pokedex helper.
-- Main helper: pokedex.py — display your per-generation progress and summary.
-- Other helpers: achievements.py checks and displays achievements collected, trainer.py and trainer.json used to store and display your trainer profile.
-- Shell integration: zshrc — snippet that calls `pokemon-colorscripts`, updates pokedex, and displays the sprite via neofetch.
-- Generation lists: gen_files/gen{1..8}_list.txt — canonical ordering used to sort your pokedex per generation.
-- Cached data: Caches sprites from `pokemon-colorscripts` and pokemon data from pokeapi for faster lookup
+# Show the Poketerm help
+poketerm --help
 
-## Uninstalling
+# Show the current version
+poketerm --version
 
-To uninstall poketerm please run the following command:
+# Update to the latest version
+poketerm --update
 
-1. Run the installer:
+# Remove a manually added Pokemon from the Pokedex
+poketerm --remove pikachu
+```
 
-   ```/bin/bash
-   sudo ./install.sh --uninstall
-   ```
-
-This will:
-
-- Uninstall Hyfetch
-- Uninstall pokemon-colorscripts
-- Uninstall poketerm
-
-## Notes
-
-- The persistent pokedex is stored at $HOME/.local/share/poketerm/pokedex.txt (see the `POKEDEX_FILE` variable in the bundled script).
-- The installer will apply migrations and take steps to protect the pokedex file (make it harder to accidentally or trivially edit)
-- Generated files and lists are installed to $HOME/.local/share/poketerm/.
-- Cached data is installed to $HOME/.local/share/poketerm/.
+When the shell starts, Poketerm will auto-run and keep catching Pokemon in your terminal.
 
 ## Achievements
 
 The list of achievements you can obtain are:
 
 **Pokedex Milestones**
+
 - First Pokemon Caught
 - 50 Pokemon Caught
 - 100 Pokemon Caught
@@ -146,6 +154,7 @@ The list of achievements you can obtain are:
 - HIDDEN
 
 **Catch Achievements**
+
 - 3 Day Catch Streak
 - 7 Day Catch Streak
 - 30 Day Catch Streak
@@ -161,6 +170,7 @@ The list of achievements you can obtain are:
 - Caught a Pokemon 25 times
 
 **Level Milestones**
+
 - Reach level 10
 - Reach level 25
 - HIDDEN
@@ -170,6 +180,7 @@ The list of achievements you can obtain are:
 - HIDDEN
 
 **Special Collections**
+
 - HIDDEN
 - HIDDEN
 - HIDDEN
@@ -185,11 +196,12 @@ There are 42 achievements in total for you to unlock. Some have been left hidden
 
 - All the pokemon designs, names, branding etc. are trademarks of [The Pokemon Company](https://www.pokemon.com/uk)
 - [Pokemon-Colorscripts](https://gitlab.com/phoneybadger/pokemon-colorscripts) for the sprites
+- [pokemon-go-colorscripts](https://github.com/scottmckendry/pokemon-go-colorscripts) (MIT) - a Go build of the same sprites that poketerm uses when available for faster startup. The installer pins a reviewed release and verifies its SHA256 checksum, falling back to the Python version otherwise.
 - [PokeAPI](https://pokeapi.co/) for the data around the pokemon
 
 ## Contributing
 
-- Feel free to open a PR with improvements to the scripts.
+- Feel free to fork the repo and open a PR with improvements to the scripts.
 
 ## To Do
 

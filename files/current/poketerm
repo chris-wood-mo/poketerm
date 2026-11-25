@@ -1,0 +1,502 @@
+#!/usr/bin/env zsh
+[[ -n "${POKETERM_RUNNING:-}" ]] && return 0
+export POKETERM_RUNNING=1
+POKETERM_PATH="$HOME/.local/share/poketerm"
+POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
+POKEDEX_HASH="$POKEDEX_FILE.sha256"
+SORTED_FILE="$HOME/.local/share/poketerm/pokedex_sorted.txt"
+GEN_DIR="$HOME/.local/share/poketerm/gen_files"
+VERSION_DIRECTORY="$HOME/.local/share/poketerm/VERSION"
+GEN_COLLECTION_DEFAULT="1-8"
+GEN_COLLECTION="$GEN_COLLECTION_DEFAULT"
+
+# === POKEDEX LOCK ===
+# Several terminals often open at once (restored tabs, split panes). Without
+# a lock they overwrite each other's catches, and one can read the pokedex
+# between another's write and its checksum update and wrongly report it as
+# tampered with. Held from the checksum check until the new checksum is
+# written; released automatically if poketerm exits early.
+POKEDEX_LOCK_FD=""
+pokedex_lock() {
+    zmodload zsh/system 2>/dev/null || return 0   # no flock support: carry on unlocked
+    mkdir -p "${POKEDEX_FILE:h}"
+    [[ -e "$POKEDEX_FILE.lock" ]] || : >> "$POKEDEX_FILE.lock"   # zsystem flock won't create it
+    if ! zsystem flock -t 30 -f POKEDEX_LOCK_FD "$POKEDEX_FILE.lock" 2>/dev/null; then
+        echo "poketerm: another poketerm is still updating your Pokedex - skipped this catch."
+        return 1
+    fi
+}
+pokedex_unlock() {
+    [[ -n "$POKEDEX_LOCK_FD" ]] && zsystem flock -u "$POKEDEX_LOCK_FD" 2>/dev/null
+    POKEDEX_LOCK_FD=""
+    return 0
+}
+
+# === MAKE POKEDEX FILE IF IT DOESNT EXIST ===
+mkdir -p "$(dirname "$POKEDEX_FILE")"
+if [[ ! -e "$POKEDEX_FILE" ]]; then
+    # A missing pokedex (first run, or the user deleted it) starts fresh. Drop
+    # any old checksum so it isn't mistaken for tampering and lock the user out.
+    : > "$POKEDEX_FILE"
+    command rm -f -- "$POKEDEX_HASH"
+fi
+chmod 444 "$POKEDEX_FILE"
+
+usage() {
+    cat <<'EOF'
+poketerm - Pokemon terminal collection tool
+
+Usage:
+  poketerm [OPTIONS]
+
+Options:
+  -h, --help           Show this help message
+  -v, --version        Show poketerm version
+  -u, --update         Update to the latest version (see: poketerm --update --help)
+  -g, --gen N|N-M      Use a specific generation or range (1–8)
+  -r, --remove NAME    Remove a Pokemon from the Pokedex
+  -f, --fix-pokedex    Repair Pokedex after removal
+
+Set POKETERM_NO_UPDATE_CHECK=1 to turn off the daily update check.
+
+Examples:
+  poketerm --update
+  poketerm --version
+  poketerm --gen 1
+  poketerm --gen 2-5
+  poketerm --remove pikachu
+  poketerm --fix-pokedex
+EOF
+}
+
+case "$1" in
+    -h|--help)
+        usage
+        return 0
+        ;;
+    -v|--version)
+        if [[ -f "$VERSION_DIRECTORY" ]]; then
+            echo "Version: $(<"$VERSION_DIRECTORY")"
+        else
+            echo "Version: unknown (reinstall with ./install.sh)"
+        fi
+        return 0
+        ;;
+    -u|--update|--upgrade)
+        shift
+        if [[ ! -f "$POKETERM_PATH/update.sh" ]]; then
+            echo "The updater is missing. Reinstall once with: git pull && ./install.sh --update"
+            return 1
+        fi
+        POKETERM_APP_DIR="$POKETERM_PATH" bash "$POKETERM_PATH/update.sh" "$@"
+        return $?
+        ;;
+    -g|--gen)
+        gen="$2"
+
+        [[ "$gen" =~ ^[0-9]+(-[0-9]+)?$ ]] || {
+            echo "Error: --gen must be N or N-M (1–8)"
+            return 1
+        }
+
+        IFS=- read -r start end <<< "$gen"
+        end=${end:-$start}
+
+        (( start >= 1 && end <= 8 && start <= end )) || {
+            echo "Error: generations must be between 1 and 8"
+            return 1
+        }
+
+        GEN_COLLECTION="$gen"
+        ;;
+    -r|--remove)
+        if [[ -n "$2" ]]; then
+            # No checksum check here: removing a manually added Pokemon is how
+            # users recover from the "modified outside poketerm" error.
+            pokedex_lock || return 1
+
+            # Exact name match (case-insensitive), normal and shiny entries.
+            # e.g. "mew" removes mew but not mewtwo; "chu" removes nothing.
+            if ! awk -v n="${(L)2}" '
+                    { base = $0; sub(/[ \t]+[0-9]+[ \t]*$/, "", base); sub(/ \(shiny\)$/, "", base) }
+                    tolower(base) == n { found = 1; next }
+                    { print }
+                    END { exit !found }
+                ' "$POKEDEX_FILE" > "$SORTED_FILE"; then
+                command rm -f -- "$SORTED_FILE"
+                echo "Pokemon '$2' not found in pokedex"
+                return 1
+            fi
+
+            chmod 644 "$POKEDEX_FILE"
+            command mv -f "$SORTED_FILE" "$POKEDEX_FILE"
+            chmod 444 "$POKEDEX_FILE"
+
+            if command -v sha256sum >/dev/null 2>&1; then
+                sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
+            else
+                shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+            fi
+
+            return 0
+        else 
+            echo "ERROR: Please specify a pokemon to remove from the pokedex e.g. poketerm --remove pikachu"
+            return 1
+        fi
+        ;;
+    -f|--fix-pokedex)
+        pokedex_lock || return 1
+        if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
+        else
+            shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+        fi
+        return 0
+        ;;
+    "")
+        ;;   # normal start: catch a Pokemon
+    *)
+        echo "poketerm: unknown option '$1'"
+        echo ""
+        usage
+        return 1
+        ;;
+esac
+
+# Checks the pokedex hasn't been edited outside poketerm. Called with the
+# pokedex lock held, right before the catch is written.
+pokedex_untampered() {
+    [[ -f "$POKEDEX_HASH" ]] || return 0
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum -c "$POKEDEX_HASH" >/dev/null 2>&1
+    else
+        shasum -a 256 -c "$POKEDEX_HASH" >/dev/null 2>&1
+    fi
+}
+
+# === START SYSTEM INFO IN THE BACKGROUND ===
+# System details come from fastfetch, or from neofetch on systems that only
+# have that. Either runs while the Pokemon is caught and XP is awarded, and
+# is only waited for when it's time to draw. sysinfo.py prints fastfetch's
+# results exactly the way neofetch did, so both look the same.
+FETCH_OUT_FILE="$(mktemp)"
+FETCH_CFG_FILE="$(mktemp)"
+FETCH_PID=""
+if command -v fastfetch >/dev/null 2>&1 && [[ -r "$POKETERM_PATH/sysinfo.py" ]]; then
+    FETCH_CMD=fastfetch
+elif command -v neofetch >/dev/null 2>&1; then
+    FETCH_CMD=neofetch
+elif command -v neowofetch >/dev/null 2>&1; then
+    FETCH_CMD=neowofetch
+else
+    FETCH_CMD=""
+fi
+
+# On macOS, neofetch's "Host" lookup alone takes ~300ms (it runs kextstat).
+# The answer only changes if the hardware does, so cache it keyed on the
+# hardware model.
+HOST_CACHE="$POKETERM_PATH/.host_cache"
+HOST_KEY=""
+CACHED_HOST=""
+if [[ "$FETCH_CMD" == *neofetch && "$(uname -s)" == Darwin ]]; then
+    HOST_KEY="$(sysctl -n hw.model 2>/dev/null)"
+    if [[ -n "$HOST_KEY" && -r "$HOST_CACHE" ]]; then
+        IFS=$'\t' read -r cached_key cached_value < "$HOST_CACHE"
+        [[ "$cached_key" == "$HOST_KEY" ]] && CACHED_HOST="$cached_value"
+    fi
+fi
+
+if [[ "$FETCH_CMD" == fastfetch ]]; then
+    # --config none: the user's own fastfetch config must not change this.
+    { fastfetch --config none --format json -s OS:Host:Kernel:Uptime:Packages:Shell:Terminal 2>/dev/null </dev/null \
+        | python3 "$POKETERM_PATH/sysinfo.py" >"$FETCH_OUT_FILE" 2>/dev/null; } &
+    FETCH_PID=$!
+elif [[ -n "$FETCH_CMD" ]]; then
+    cat > "$FETCH_CFG_FILE" <<'EOF'
+print_info() {
+    info "OS" distro
+    if [[ -n "$POKETERM_CACHED_HOST" ]]; then
+        prin "Host" "$POKETERM_CACHED_HOST"
+    else
+        info "Host" model
+    fi
+    info "Kernel" kernel
+    info "Uptime" uptime
+    info "Packages" packages
+    info "Shell" shell
+    info "Terminal" term
+}
+EOF
+    POKETERM_CACHED_HOST="$CACHED_HOST" POKETERM_RUNNING=1 \
+        "$FETCH_CMD" --config "$FETCH_CFG_FILE" --off >"$FETCH_OUT_FILE" 2>/dev/null </dev/null &
+    FETCH_PID=$!
+fi
+
+# === PICK A RANDOM POKEMON FROM THE CHOSEN GENERATIONS ===
+# Prefer the Go build of pokemon-colorscripts (~6ms per sprite vs ~80ms for
+# the Python one); both print identical sprites.
+if [[ -x "$HOME/.local/share/pokemon-go-colorscripts/pokemon-go-colorscripts" ]]; then
+    COLORSCRIPTS="$HOME/.local/share/pokemon-go-colorscripts/pokemon-go-colorscripts"
+elif command -v pokemon-go-colorscripts >/dev/null 2>&1; then
+    COLORSCRIPTS=pokemon-go-colorscripts
+elif command -v pokemon-colorscripts >/dev/null 2>&1; then
+    COLORSCRIPTS=pokemon-colorscripts
+else
+    echo "poketerm: pokemon-colorscripts is not installed. Reinstall with: ./install.sh --update"
+    command rm -f -- "$FETCH_OUT_FILE" "$FETCH_CFG_FILE"
+    return 1
+fi
+
+IFS=- read -r gen_start gen_end <<< "$GEN_COLLECTION"
+gen_end=${gen_end:-$gen_start}
+candidates=()
+for (( g = gen_start; g <= gen_end; g++ )); do
+    [[ -r "$GEN_DIR/gen${g}_list.txt" ]] && candidates+=("${(@f)$(<"$GEN_DIR/gen${g}_list.txt")}")
+done
+candidates=(${candidates:#})
+if (( ${#candidates} == 0 )); then
+    echo "poketerm: no Pokemon lists found in $GEN_DIR. Reinstall with: ./install.sh --update"
+    command rm -f -- "$FETCH_OUT_FILE" "$FETCH_CFG_FILE"
+    return 1
+fi
+base_name="${candidates[RANDOM % ${#candidates} + 1]}"
+sprite="$("$COLORSCRIPTS" --no-title -n "$base_name" 2>/dev/null)"
+
+# === SHINY ROLL (1/4096 or 1/10 if THAT generation complete) ===
+
+pokemon_gen=""
+
+for GEN_FILE in "$GEN_DIR"/gen*_list.txt; do
+    if grep -qx "$base_name" "$GEN_FILE"; then
+        pokemon_gen="$GEN_FILE"
+        break
+    fi
+done
+
+gen_complete=false
+
+if [[ -n "$pokemon_gen" ]]; then
+    total=$(wc -l < "$pokemon_gen")
+
+    caught=$(awk '
+        NR==FNR { gen[$0]=1; next }
+        {
+            n=$0
+            sub(/[ \t]+[0-9]+$/, "", n)
+            sub(/ \(shiny\)$/, "", n)
+            if (n in gen) seen[n]=1
+        }
+        END { print length(seen) }
+    ' "$pokemon_gen" "$POKEDEX_FILE")
+
+    (( caught == total )) && gen_complete=true
+fi
+
+if $gen_complete; then
+    (( RANDOM % 10 == 0 )) && shiny=true || shiny=false
+else
+    (( RANDOM % 4096 == 0 )) && shiny=true || shiny=false
+fi
+
+# === FETCH SHINY IF NEEDED ===
+if [ "$shiny" = true ]; then
+    sprite="$("$COLORSCRIPTS" --no-title -n "$base_name" -s 2>/dev/null)"
+fi
+
+# === FORMAT NAME FOR POKEDEX STORAGE ===
+if [ "$shiny" = true ]; then
+    stored_name="${base_name} (shiny)"
+    display_name=$'\033[33m'"${base_name} (shiny)"$'\033[0m'
+else
+    stored_name="$base_name"
+    display_name="$base_name"
+fi
+
+# === RECORD THE CATCH (pokedex lock held only for this part) ===
+# Everything above (choosing the Pokemon, drawing it, the shiny roll) runs
+# without the lock, so many terminals opening at once only queue for the few
+# milliseconds it takes to check and rewrite the pokedex.
+stop_background_fetch() {
+    [[ -n "$FETCH_PID" ]] && kill "$FETCH_PID" 2>/dev/null
+    command rm -f -- "$FETCH_OUT_FILE" "$FETCH_CFG_FILE"
+}
+if ! pokedex_lock; then
+    stop_background_fetch
+    return 1
+fi
+if ! pokedex_untampered; then
+    pokedex_unlock
+    stop_background_fetch
+    echo "Pokedex modified outside poketerm, please use 'poketerm --remove \"YOUR_ADDED_POKEMON\"' to move the manually added pokemon from the pokedex."
+    return 1
+fi
+
+chmod 644 "$POKEDEX_FILE"
+
+# === UPDATE POKEDEX WITH COUNT ===
+awk -v n="$stored_name" '
+{
+    if ($NF ~ /^[0-9]+$/) {
+        count = $NF
+        name = substr($0, 1, length($0)-length($NF))
+        sub(/[ \t]+$/, "", name)
+    } else {
+        name = $0
+        count = 0
+    }
+
+    if (name == n) {
+        count++
+        found=1
+    }
+
+    print name, count
+}
+END {
+    if (!found) print n,1
+}
+' "$POKEDEX_FILE" > "$SORTED_FILE" && command mv -f "$SORTED_FILE" "$POKEDEX_FILE"
+
+# === SORT POKEDEX BY GENERATION ORDER ===
+# National Dex order across all generations (gen1..gen8 lists in order), each
+# Pokemon's normal entry before its shiny one. Unknown names go last.
+awk -v dex="$POKEDEX_FILE" '
+    FILENAME != dex { if (!($0 in order)) order[$0] = ++n; next }
+    {
+        base = $0
+        sub(/[ \t]+[0-9]+[ \t]*$/, "", base)
+        shiny = sub(/ \(shiny\)$/, "", base)
+        printf "%d\t%d\t%s\n", ((base in order) ? order[base] : 999999), shiny, $0
+    }
+' "$GEN_DIR"/gen*_list.txt "$POKEDEX_FILE" \
+    | sort -t "$(printf '\t')" -k1,1n -k2,2n -k3,3 \
+    | cut -f3- > "$SORTED_FILE" \
+    && command mv -f "$SORTED_FILE" "$POKEDEX_FILE"
+
+chmod 444 "$POKEDEX_FILE"
+
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
+else
+    shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+fi
+pokedex_unlock
+
+# === AWARD XP + CHECK ACHIEVEMENTS ===
+# Runs after the pokedex is updated so achievements count this catch.
+# Normal: 10 XP | Shiny: 150 XP
+if [ "$shiny" = true ]; then
+    xp_to_add=150
+else
+    xp_to_add=10
+fi
+
+# Runs alongside the display; waited for before poketerm exits.
+PYTHONPATH="$POKETERM_PATH" python3 - "$xp_to_add" <<'PY' >/dev/null 2>&1 &
+from trainer import add_xp, update_streak
+from achievements import check_pokedex_achievements, update_daily_catch
+import sys
+
+add_xp(int(sys.argv[1]))
+update_streak()
+update_daily_catch()
+check_pokedex_achievements()
+PY
+XP_PID=$!
+
+# === SHOW POKEMON + NEOFETCH INFO ===
+# Sprite (with the Pokemon's name underneath) on the left; on the right the
+# username, an underline the same length as the username, then system details.
+
+() {
+    setopt localoptions extendedglob
+
+    # Widths below are measured in characters. In a non-UTF-8 locale (LANG=C,
+    # common on minimal Linux systems) zsh would count the sprite's block
+    # glyphs as 3 bytes each and misalign the system details, so switch to a
+    # UTF-8 locale just for this function if one is available.
+    local probe="▀"
+    if (( ${#probe} != 1 )); then
+        local LC_ALL loc
+        for loc in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
+            LC_ALL="$loc" 2>/dev/null
+            (( ${#probe} == 1 )) && break
+        done
+    fi
+
+    local ansi_re=$'\e''\[[0-9;?]#[a-zA-Z]'
+    local user_name="${USER:-$(whoami 2>/dev/null || echo unknown)}"
+    local fetch_out="" line plain
+    local -a sprite_lines info_lines
+
+    if [[ -n "$FETCH_PID" ]]; then
+        wait "$FETCH_PID" 2>/dev/null
+        fetch_out="$(<"$FETCH_OUT_FILE")"
+    fi
+    command rm -f -- "$FETCH_OUT_FILE" "$FETCH_CFG_FILE"
+
+    info_lines=(
+        $'\e[38;5;81m'"${user_name}"$'\e[0m'
+        "${(l:${#user_name}::-:)}"
+    )
+    for line in "${(@f)fetch_out}"; do
+        # Drop neofetch's cursor / line-wrap toggles and its leading padding.
+        line="${line//$'\e'\[\?[0-9]#[hl]/}"
+        line="${line##[[:space:]]#}"
+        plain="${line//${~ansi_re}/}"
+        [[ -z "${plain//[[:space:]]/}" ]] && continue
+        info_lines+=("$line")
+        # Save a freshly looked-up Host for next time (see HOST_CACHE above).
+        if [[ -n "$HOST_KEY" && -z "$CACHED_HOST" && "$plain" == Host:\ * ]]; then
+            print -r -- "${HOST_KEY}"$'\t'"${${plain#Host: }%%[[:space:]]#}" > "$HOST_CACHE" 2>/dev/null
+        fi
+    done
+
+    sprite_lines=("${(@f)sprite}")
+    while (( ${#sprite_lines} )) && [[ -z "${${sprite_lines[-1]//${~ansi_re}/}//[[:space:]]/}" ]]; do
+        sprite_lines[-1]=()
+    done
+    sprite_lines+=("" "$display_name")
+
+    # Measure ANSI-stripped width in characters so the multibyte block glyphs
+    # in the sprite don't inflate the gap.
+    local -i sprite_width=0 pad i rows gap=3
+    for line in "${sprite_lines[@]}"; do
+        plain="${line//${~ansi_re}/}"
+        (( ${#plain} > sprite_width )) && sprite_width=${#plain}
+    done
+
+    rows=$(( ${#sprite_lines} > ${#info_lines} ? ${#sprite_lines} : ${#info_lines} ))
+    for (( i = 1; i <= rows; i++ )); do
+        line="${sprite_lines[i]:-}"
+        plain="${line//${~ansi_re}/}"
+        pad=$(( sprite_width - ${#plain} + gap ))
+        printf '%s\e[0m%*s%s\e[0m\n' "$line" "$pad" "" "${info_lines[i]:-}"
+    done
+}
+
+# === UPDATE NOTICE ===
+# Reads a cached result so startup never waits on the network; the cache is
+# refreshed in the background at most once a day.
+() {
+    [[ -n "${POKETERM_NO_UPDATE_CHECK:-}" || ! -f "$POKETERM_PATH/update.sh" ]] && return 0
+
+    local check_file="$POKETERM_PATH/.update_check"
+    local checked_at=0 latest="" newer=0
+    [[ -r "$check_file" ]] && read -r checked_at latest newer < "$check_file"
+    [[ "$checked_at" == <-> ]] || checked_at=0
+
+    if [[ "$newer" == 1 && -n "$latest" ]]; then
+        print -P "%F{yellow}✦ Poketerm $latest is available (you have $(<"$VERSION_DIRECTORY" 2>/dev/null)). Run: poketerm --update%f"
+    fi
+
+    if (( $(date +%s) - checked_at > 86400 )); then
+        # Mark the check as started so parallel terminals don't all hit GitHub.
+        print -r -- "$(date +%s) $latest $newer" > "$check_file" 2>/dev/null
+        ( POKETERM_APP_DIR="$POKETERM_PATH" bash "$POKETERM_PATH/update.sh" --check --quiet </dev/null >/dev/null 2>&1 & )
+    fi
+}
+
+# Make sure the XP/achievement update has been saved before exiting.
+[[ -n "${XP_PID:-}" ]] && wait "$XP_PID" 2>/dev/null
+return 0

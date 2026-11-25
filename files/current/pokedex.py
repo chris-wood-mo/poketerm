@@ -2,13 +2,6 @@
 import sys
 import os
 
-try:
-    import readchar
-except ImportError:
-    print("\n\033[31mError: 'readchar' is not installed.\033[0m")
-    print("Please run: \033[32mpip3 install -r requirements.txt\033[0m from the root of the poketerm repository.\n")
-    sys.exit(1)
-
 import readchar
 import json
 import subprocess
@@ -44,13 +37,21 @@ def clear():
     # \033[3J: Clear scrollback buffer
     sys.stdout.write("\033[2J\033[H\033[3J")
     sys.stdout.flush()
-clear()
 
 def hide_cursor():
     sys.stdout.write("\033[?25l")
 
 def show_cursor():
     sys.stdout.write("\033[?25h")
+
+GO_COLORSCRIPTS = Path.home() / ".local/share/pokemon-go-colorscripts/pokemon-go-colorscripts"
+
+def colorscripts_cmd():
+    """Prefer the much faster Go build; it prints identical sprites."""
+    if os.access(GO_COLORSCRIPTS, os.X_OK):
+        return str(GO_COLORSCRIPTS)
+    import shutil
+    return shutil.which("pokemon-go-colorscripts") or "pokemon-colorscripts"
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mK]")
 
@@ -217,7 +218,7 @@ def draw_details(name, has_normal, has_shiny):
             sprites[variant] = cache_sprite.read_text().splitlines()
         else:
             try:
-                args = ["pokemon-colorscripts", "--no-title", "-n", name]
+                args = [colorscripts_cmd(), "--no-title", "-n", name]
                 if variant == "shiny": args.insert(2, "-s")
                 sprites[variant] = subprocess.check_output(args, stderr=subprocess.DEVNULL, text=True).splitlines()
                 cache_sprite.write_text("\n".join(sprites[variant]))
@@ -377,5 +378,6 @@ def main():
         print(RESET)
 
 if __name__ == "__main__":
+    clear()
     trainer.load_trainer_profile()
     main()

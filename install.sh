@@ -1,472 +1,698 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 ### =========================
 ### Configuration
 ### =========================
 
-VERSION="0.0.6"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-INSTALL_DIR="$HOME/.local/share/"
-BIN_DIR="/usr/local/bin"
-ZSHRC="$HOME/.zshrc"
+# Older versions told users to run `sudo ./install.sh`. Poketerm lives entirely
+# in the user's home, so running as root would leave root-owned files the user
+# can't write (and XP would silently stop saving). Re-run as the real user.
+if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
+    echo "Poketerm doesn't need sudo - continuing as $SUDO_USER."
+    exec sudo -u "$SUDO_USER" -H bash "$REPO_ROOT/install.sh" "$@"
+fi
+
+VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION" 2>/dev/null || true)"
+VERSION="${VERSION:-0.0.0}"
 
 ZSHRC_MARKER_BEGIN="# >>> POKETERM SCRIPT BEGIN >>>"
 ZSHRC_MARKER_END="# <<< POKETERM SCRIPT END <<<"
+BACKUPS_TO_KEEP=5
 
-VERSION_FILE="$INSTALL_DIR/poketerm/VERSION"
-LOCAL_USER="${SUDO_USER:-$(logname)}"
-POKEDEX_FILE="$HOME/.local/share/poketerm/pokedex.txt"
+resolve_real_home() {
+    if [[ -n "${POKETERM_REAL_HOME:-}" ]]; then
+        printf '%s\n' "$POKETERM_REAL_HOME"
+        return 0
+    fi
 
-UPDATE=false
-UNINSTALL=false
-GEN_SPECIFIC=false
+    local user_name home_path=""
+    user_name="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || echo root)}}"
+
+    if command -v dscl >/dev/null 2>&1; then
+        home_path="$(dscl . -read "/Users/$user_name" NFSHomeDirectory 2>/dev/null | awk '{print $2}' | tail -n 1)"
+    fi
+
+    if [[ -z "$home_path" ]] && command -v getent >/dev/null 2>&1; then
+        home_path="$(getent passwd "$user_name" 2>/dev/null | cut -d: -f6)"
+    fi
+
+    printf '%s\n' "${home_path:-${HOME:-$PWD}}"
+}
+
+REAL_HOME="$(resolve_real_home)"
+INSTALL_ROOT="${POKETERM_INSTALL_ROOT:-$REAL_HOME/.local}"
+BIN_DIR="${POKETERM_BIN_DIR:-$REAL_HOME/.local/bin}"
+ZSHRC="${POKETERM_ZSHRC:-${ZSHRC:-$REAL_HOME/.zshrc}}"
+if [[ "$ZSHRC" == /private/tmp/* && -z "${POKETERM_ZSHRC:-}" ]]; then
+    ZSHRC="$REAL_HOME/.zshrc"
+fi
+
+MODE=install          # install | update | uninstall
+DEV=false
 GEN=""
+LOG_FILE=""
+
+usage() {
+    cat <<EOF
+Poketerm installer (version $VERSION)
+
+Usage: ./install.sh [--install|--update|--uninstall] [OPTIONS]
+
+  --install          Install poketerm (default; refreshes an existing install)
+  --update           Update an existing install, keeping all progress
+  --uninstall        Remove poketerm and its data
+  --gen N|N-M        Only catch Pokemon from generation N (or N to M), 1-8
+  --dev              Developer mode: link to this checkout so edits are live
+  --zshrc PATH       Use a different zshrc file
+  -h, --help         Show this help
+
+Most users can simply run:  poketerm --update
+EOF
+}
 
 ### =========================
 ### Flag parsing
 ### =========================
 
-while [ $# -gt 0 ]; do
+while [[ $# -gt 0 ]]; do
     case "$1" in
         --gen)
-            GEN_SPECIFIC=true
-            gen="$2"
-            shift
-
-            [[ "$gen" =~ ^[0-9]+(-[0-9]+)?$ ]] || {
-                echo "Error: --gen must be N or N-M (1–8)"
-                exit 1
-            }
-
-            IFS=- read -r start end <<< "$gen"
-            end=${end:-$start}
-
-            (( start >= 1 && end <= 8 && start <= end )) || {
+            [[ $# -ge 2 ]] || { echo "Error: --gen needs a value (N or N-M)"; exit 1; }
+            GEN="$2"
+            [[ "$GEN" =~ ^[0-9]+(-[0-9]+)?$ ]] || { echo "Error: --gen must be N or N-M (1-8)"; exit 1; }
+            IFS=- read -r gen_start gen_end <<< "$GEN"
+            gen_end=${gen_end:-$gen_start}
+            (( gen_start >= 1 && gen_end <= 8 && gen_start <= gen_end )) || {
                 echo "Error: generations must be between 1 and 8"
                 exit 1
             }
-
-            GEN="$gen"
+            shift 2
             ;;
-        --update)
-            UPDATE=true
+        --install|--setup)     MODE=install; shift ;;
+        --update|--upgrade)    MODE=update; shift ;;
+        --uninstall|--remove)  MODE=uninstall; shift ;;
+        --dev)                 DEV=true; shift ;;
+        --zshrc)
+            [[ $# -ge 2 ]] || { echo "Error: --zshrc needs a path"; exit 1; }
+            ZSHRC="$2"
+            shift 2
             ;;
-        --uninstall)
-            UNINSTALL=true
-            ;;
-        *)
-            echo "Unknown flag: $1"
-            exit 1
-            ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown flag: $1"; usage; exit 1 ;;
     esac
-    shift
 done
 
+APP_DIR="$INSTALL_ROOT/share/poketerm"
+SHARE_DIR="$INSTALL_ROOT/share"
+POKEDEX_FILE="$APP_DIR/pokedex.txt"
+POKEDEX_HASH="$POKEDEX_FILE.sha256"
+
 ### =========================
-### Helpers
+### Output helpers
 ### =========================
 
-write_version() {
-    local version="$1"
-    sudo -u "$LOCAL_USER" touch "$VERSION_FILE"
-    echo $version > "$VERSION_FILE"
+if [[ -t 1 ]]; then
+    C_GREEN=$'\033[32m'; C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'; C_RESET=$'\033[0m'
+    C_CLEAR=$'\r\033[K'
+else
+    C_GREEN=""; C_RED=""; C_YELLOW=""; C_RESET=""; C_CLEAR=""
+fi
+
+CURRENT_STEP=""
+step() {
+    CURRENT_STEP="$1"
+    [[ -t 1 ]] && printf '  • %s...' "$1"
+    return 0
+}
+ok() {
+    printf '%s  %s✔%s %s\n' "$C_CLEAR" "$C_GREEN" "$C_RESET" "$CURRENT_STEP"
+    CURRENT_STEP=""
+}
+warn() {
+    printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$1"
 }
 
-
-installed_version() {
-    if [[ -f "$VERSION_FILE" ]]; then
-        cat "$VERSION_FILE"
-        return
+on_error() {
+    local status=$?
+    trap - ERR
+    [[ -n "$CURRENT_STEP" ]] && printf '%s  %s✖%s %s\n' "$C_CLEAR" "$C_RED" "$C_RESET" "$CURRENT_STEP"
+    rollback_code_files || true
+    echo ""
+    echo "${C_RED}Poketerm $MODE failed.${C_RESET} Your Pokedex and trainer progress were not changed."
+    [[ -n "${LAST_BACKUP:-}" ]] && echo "A copy of your progress is saved in: $LAST_BACKUP"
+    if [[ -n "$LOG_FILE" && -s "$LOG_FILE" ]]; then
+        echo "Details:"
+        tail -n 15 "$LOG_FILE" | sed 's/^/    /'
+        echo "Full log: $LOG_FILE"
     fi
+    exit "$status"
+}
 
-    if command -v git >/dev/null 2>&1; then
-        if git -C "$(dirname "$0")" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            tag="$(git -C "$(dirname "$0")" describe --tags --abbrev=0 2>/dev/null || true)"
-            if [[ -n "$tag" ]]; then
-                echo "$tag"
-                write_version $tag
-                return
+run() {
+    # Run a command, sending its output to the log instead of the screen.
+    "$@" >>"$LOG_FILE" 2>&1
+}
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1"
+    else
+        shasum -a 256 "$1"
+    fi
+}
+
+### =========================
+### Checks
+### =========================
+
+app_files_dir() {
+    if [[ -d "$REPO_ROOT/files/current" ]]; then
+        echo "$REPO_ROOT/files/current"
+    elif [[ -d "$REPO_ROOT/files/$VERSION" ]]; then
+        echo "$REPO_ROOT/files/$VERSION"
+    else
+        return 1
+    fi
+}
+
+preflight() {
+    step "Checking requirements"
+    local missing=()
+    command -v zsh >/dev/null 2>&1 || missing+=("zsh")
+    command -v python3 >/dev/null 2>&1 || missing+=("python3")
+    command -v git >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 \
+        || command -v pokemon-colorscripts >/dev/null 2>&1 || missing+=("curl or git")
+    if (( ${#missing[@]} )); then
+        printf '%s' "$C_CLEAR"
+        echo "${C_RED}Missing required tools:${C_RESET} ${missing[*]}"
+        echo "Install them and run the installer again."
+        exit 1
+    fi
+    app_files_dir >/dev/null || { echo "No app files found under $REPO_ROOT/files" >>"$LOG_FILE"; false; }
+
+    # Installs made with `sudo` by old versions can contain root-owned files.
+    # Stop before changing anything and say exactly how to fix it.
+    if [[ -d "$APP_DIR" ]]; then
+        local not_mine
+        not_mine="$(find "$APP_DIR" -maxdepth 2 ! -user "$(id -un)" -print -quit 2>/dev/null || true)"
+        if [[ -n "$not_mine" ]]; then
+            printf '%s' "$C_CLEAR"
+            echo "${C_RED}Some poketerm files are owned by another user (probably from an old 'sudo' install):${C_RESET}"
+            echo "    $not_mine"
+            echo "Fix it with this command, then run the installer again (your progress is safe):"
+            echo "    sudo chown -R $(id -un) \"$APP_DIR\""
+            exit 1
+        fi
+    fi
+    ok
+    if ! command -v fastfetch >/dev/null 2>&1 && ! command -v neofetch >/dev/null 2>&1 && ! command -v neowofetch >/dev/null 2>&1; then
+        local how="brew install fastfetch"
+        if [[ "$(uname -s)" != Darwin ]]; then
+            if command -v apt-get >/dev/null 2>&1; then how="sudo apt install fastfetch, or neofetch on Ubuntu 24.04 / Debian 12 and older"
+            elif command -v dnf >/dev/null 2>&1; then how="sudo dnf install fastfetch"
+            elif command -v pacman >/dev/null 2>&1; then how="sudo pacman -S fastfetch"
+            elif command -v zypper >/dev/null 2>&1; then how="sudo zypper install fastfetch"
+            else how="see https://github.com/fastfetch-cli/fastfetch"
             fi
         fi
-    fi
-
-    echo "0.0.0"
-}
-
-ensure_dirs() {
-    if ! grep -Fxq "$ZSHRC_MARKER_BEGIN" "$ZSHRC"; then
-        # deleting directory if it already exists
-        rm -rf "$INSTALL_DIR/poketerm" || return 1
-
-        # Ensure run directory exists and clean it up
-        sudo -u "$LOCAL_USER" mkdir -p "$INSTALL_DIR/poketerm"
-
-        # Create pokedex file
-        sudo -u "$LOCAL_USER" touch "$INSTALL_DIR/poketerm/pokedex.txt"
-
-        echo "Backing up ~/.zshrc to poketerm directory $(pwd)/zshrc.backup. Please keep this file for the uninstall script."
-
-        sudo -u "$LOCAL_USER" cp "$ZSHRC" ./zshrc.backup
-
-        echo "Prepending Pokemon script into ~/.zshrc"
-
-        sudo -u "$LOCAL_USER" touch "$ZSHRC.tmp"
-        {
-            echo "$ZSHRC_MARKER_BEGIN"
-            echo "alias neofetch=neowofetch"
-            if [[ "$GEN_SPECIFIC" == true ]]; then
-                echo "poketerm --gen $gen"
-            else
-                echo "poketerm"
-            fi 
-            echo "$ZSHRC_MARKER_END"
-            echo ""
-            cat "$ZSHRC"
-        } >> "$ZSHRC.tmp"
-
-        mv "$ZSHRC.tmp" "$ZSHRC"
+        warn "fastfetch not found - system details will be hidden until it is installed ($how)"
     fi
 }
 
-install_hyfetch() {
-    # Install hyfetch
-    if ! command -v hyfetch >/dev/null 2>&1; then
-        echo "Hyfetch not found. Installing via Homebrew..."
-        sudo -u "$LOCAL_USER" brew install hyfetch >/dev/null 2>&1
-        sudo -u "$LOCAL_USER" brew link --overwrite hyfetch >/dev/null 2>&1
-    else
-        echo "hyfetch is already installed."
-    fi
+has_existing_install() {
+    [[ -d "$APP_DIR" && -f "$APP_DIR/poketerm" ]] || [[ -L "$BIN_DIR/poketerm" ]]
 }
 
-install_pokemon_colorscripts() {
-    # Install pokemon-colorscripts
-    if ! command -v pokemon-colorscripts >/dev/null 2>&1; then
-        echo "pokemon-colorscripts not found. Installing..."
-        rm -rf "$INSTALL_DIR"pokemon-colorscripts || return 1
-        git clone https://gitlab.com/phoneybadger/pokemon-colorscripts.git "$INSTALL_DIR"pokemon-colorscripts >/dev/null 2>&1
-        cd "$INSTALL_DIR"pokemon-colorscripts
-        sudo "$INSTALL_DIR"pokemon-colorscripts/install.sh >/dev/null 2>&1
-        cd -
-    else
-        echo "pokemon-colorscripts is already installed."
-    fi
+installed_version() {
+    tr -d '[:space:]' < "$APP_DIR/VERSION" 2>/dev/null || echo "unknown"
 }
 
 ### =========================
-### Install
+### Progress backup
 ### =========================
 
-install() {
-    echo "Installing poketerm $VERSION"
+LAST_BACKUP=""
 
-    ensure_dirs
+backup_progress() {
+    [[ -f "$POKEDEX_FILE" || -f "$APP_DIR/trainer.json" ]] || return 0
 
-   # moving all the files to appropriate locations
-    sudo -u "$LOCAL_USER" cp -rf files/gen_files $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" cp -rf files/cache $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" cp -r files/$VERSION/* $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/pokedex.py $INSTALL_DIR/poketerm/poketerm
+    step "Backing up your Pokedex and trainer progress"
+    local stamp dest
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    dest="$APP_DIR/backups/$stamp-$(installed_version)"
+    run mkdir -p "$dest"
+    for f in pokedex.txt pokedex.txt.sha256 trainer.json; do
+        [[ -f "$APP_DIR/$f" ]] && run cp -p "$APP_DIR/$f" "$dest/$f"
+    done
+    LAST_BACKUP="$dest"
 
-    # create symlink in usr/bin
-    rm -rf $BIN_DIR/pokedex $BIN_DIR/poketerm || return 1
-    ln -s $INSTALL_DIR/poketerm/poketerm $BIN_DIR/poketerm
-    ln -s $INSTALL_DIR/poketerm/pokedex.py $BIN_DIR/pokedex
+    # Keep only the most recent backups.
+    local old
+    while IFS= read -r old; do
+        [[ -n "$old" && "$old" == "$APP_DIR/backups/"* ]] && run rm -rf -- "$old"
+    done < <(ls -1d "$APP_DIR"/backups/*/ 2>/dev/null | sort -r | tail -n +$((BACKUPS_TO_KEEP + 1)))
+    ok
+}
 
-    install_hyfetch
-    install_pokemon_colorscripts
+### =========================
+### Code install (staged, with rollback)
+### =========================
 
-    echo "Creating pokedex integrity file"
-    sudo -u "$LOCAL_USER" touch "$POKEDEX_FILE.sha256"
-    POKEDEX_HASH="$POKEDEX_FILE.sha256"
+STAGE_DIR=""
+ROLLBACK_DIR=""
+SWAPPED_FILES=()
 
-    if [ ! -s "$POKEDEX_FILE" ]; then
-        if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
+cleanup_stage() {
+    [[ -n "$STAGE_DIR" && -d "$STAGE_DIR" ]] && rm -rf -- "$STAGE_DIR"
+    STAGE_DIR=""
+}
+trap cleanup_stage EXIT
+
+rollback_code_files() {
+    (( ${#SWAPPED_FILES[@]} )) || return 0
+    local f
+    for f in "${SWAPPED_FILES[@]}"; do
+        if [[ -e "$ROLLBACK_DIR/$f" || -L "$ROLLBACK_DIR/$f" ]]; then
+            mv -f "$ROLLBACK_DIR/$f" "$APP_DIR/$f"
         else
-            shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+            rm -f -- "$APP_DIR/$f"
         fi
-    fi
-
-    chmod 444 "$POKEDEX_FILE"
-
-    write_version $VERSION
-    echo "-------------------------------------------------------"
-    echo " Poketerm installed successfully!"
-    echo "-------------------------------------------------------"
-
-    if ! python3 -c "import readchar" >/dev/null 2>&1; then
-        echo -e "\033[33mNote: The 'readchar' Python library is required to run the pokedex.\033[0m"
-        echo ""
-        echo "  Standard: pip3 install -r requirements.txt"
-        echo "  Linux:    sudo apt install python3-readchar (on Debian/Ubuntu)"
-        echo "-------------------------------------------------------"
-    fi
-
-    echo "To start collecting pokemon run: source $ZSHRC"
+    done
+    echo "  Restored the previous version's files."
+    SWAPPED_FILES=()
 }
 
-### =========================
-### Migrations
-### =========================
+install_code() {
+    local src
+    src="$(app_files_dir)"
 
-migrate_001_to_002() {
-    echo "Migrating 0.0.1 → 0.0.2"
-    echo "Updating existing Pokemon script in ~/.zshrc"
+    step "Preparing poketerm $VERSION"
+    run mkdir -p "$APP_DIR" "$SHARE_DIR"
+    STAGE_DIR="$(mktemp -d "$SHARE_DIR/.poketerm-stage.XXXXXX")"
+    ROLLBACK_DIR="$STAGE_DIR/rollback"
+    run mkdir -p "$STAGE_DIR/new" "$ROLLBACK_DIR"
 
-    sudo -u "$LOCAL_USER" cp "$ZSHRC" ./zshrc_update.backup
-    sudo -u "$LOCAL_USER" cp files/0.0.2/pokedex $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/pokedex
-    sudo -u "$LOCAL_USER" touch "$ZSHRC.tmp"
-    TMP_ZSHRC="$ZSHRC.tmp"
-
-    # Use awk to replace between markers, reading snippet from file
-    awk -v begin="$ZSHRC_MARKER_BEGIN" -v end="$ZSHRC_MARKER_END" '
-        BEGIN {reading_snippet=0}
-        $0 == begin {
-            print begin
-            while ((getline line < "./files/0.0.2/zshrc") > 0) print line
-            reading_snippet=1
-            next
-        }
-        $0 == end {reading_snippet=0; print end; next}
-        reading_snippet != 1 {print}
-    ' "$ZSHRC" > "$TMP_ZSHRC"
-
-    mv "$TMP_ZSHRC" "$ZSHRC"
-
-    # Make sure file exists
-    if [ ! -f "$INSTALL_DIR/poketerm/pokedex.txt" ]; then
-        echo "No pokedex file found at $INSTALL_DIR/poketerm/pokedex.txt"
-        exit 1
-    fi
-
-    echo "Backing up ~/.zshrc to poketerm directory $(pwd)/pokedex_update.backup. If you have any issues with the update please the pokedex at ${INSTALL_DIR}poketerm/pokedex.txt using this backup."
-    sudo -u "$LOCAL_USER" cp "$INSTALL_DIR/poketerm/pokedex.txt" ./pokedex_update.backup
-    sudo -u "$LOCAL_USER" touch "format_file.tmp"
-    FORMAT_FILE="format_file.tmp"
-
-    awk '
-    {
-        # Check for duplicates
-        if ($0 in seen) {
-            print "Error: duplicate Pokemon entry found -> " $0 > "/dev/stderr"
-            exit 1
-        }
-        seen[$0]=1
-
-        # Append count if missing
-        if ($NF ~ /^[0-9]+$/) {
-            print $0  # Already has count, leave as-is
-        } else {
-            print $0, 1
-        }
-    }
-    ' "$INSTALL_DIR/poketerm/pokedex.txt" > "$FORMAT_FILE"
-
-    if [ $? -eq 0 ]; then
-        mv "$FORMAT_FILE" "$INSTALL_DIR/poketerm/pokedex.txt"
-        echo "Poketerm updated successfully from 0.0.1 to 0.0.2!"
-    else
-        echo "Pokedex contains duplicates this should not be possible. Fix the file to only contain one of each pokemon and try again."
-        rm -f "$FORMAT_FILE"
-        exit 1
-    fi
-
-    write_version "0.0.2"
-}
-
-migrate_002_to_003() {
-    echo "Migrating 0.0.2 → 0.0.3"
-
-    sudo -u "$LOCAL_USER" cp files/$VERSION/poketerm $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/poketerm
-
-    # create symlink in usr/bin
-    rm -rf $BIN_DIR/poketerm || return 1
-    ln -s $INSTALL_DIR/poketerm/poketerm $BIN_DIR/poketerm
-
-    echo "Updating existing Pokemon script in ~/.zshrc"
-
-    sudo -u "$LOCAL_USER" cp "$ZSHRC" ./zshrc_update.backup
-    sudo -u "$LOCAL_USER" touch "$ZSHRC.tmp"
-    TMP_ZSHRC="$ZSHRC.tmp"
-
-    # Use awk to replace between markers, reading snippet from file
-    awk -v begin="$ZSHRC_MARKER_BEGIN" -v end="$ZSHRC_MARKER_END" '
-        BEGIN {reading_snippet=0}
-        $0 == begin {
-            print begin
-            print "alias neofetch=neowofetch"
-            print "poketerm"
-            reading_snippet=1
-            next
-        }
-        $0 == end {reading_snippet=0; print end; next}
-        reading_snippet != 1 {print}
-    ' "$ZSHRC" > "$TMP_ZSHRC"
-
-    mv "$TMP_ZSHRC" "$ZSHRC"
-
-    POKEDEX_HASH="$POKEDEX_FILE.sha256"
-    if [ -s "$POKEDEX_FILE" ] && [ ! -f "$POKEDEX_HASH" ]; then
-        echo "Creating pokedex integrity file for 0.0.3"
-
-        sudo -u "$LOCAL_USER" touch "$POKEDEX_HASH"
-        if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$POKEDEX_FILE" > "$POKEDEX_HASH"
+    # Code files only. User data (pokedex.txt, trainer.json, cache) is never
+    # copied over; trainer.json in the repo is only a template for new installs.
+    local -a code_files=()
+    local path name
+    for path in "$src"/*; do
+        name="$(basename "$path")"
+        [[ -f "$path" ]] || continue
+        [[ "$name" == "trainer.json" ]] && continue
+        code_files+=("$name")
+        if [[ "$DEV" == true ]]; then
+            run ln -s "$path" "$STAGE_DIR/new/$name"
         else
-            shasum -a 256 "$POKEDEX_FILE" > "$POKEDEX_HASH"
+            run cp -p "$path" "$STAGE_DIR/new/$name"
         fi
+    done
+    [[ ${#code_files[@]} -gt 0 ]] || { echo "No code files found in $src" >>"$LOG_FILE"; false; }
+    [[ "$DEV" == true ]] || run chmod +x "$STAGE_DIR/new/poketerm" "$STAGE_DIR/new/pokedex.py" "$STAGE_DIR/new/update.sh"
+    ok
 
+    step "Installing poketerm $VERSION"
+    for name in "${code_files[@]}"; do
+        if [[ -e "$APP_DIR/$name" || -L "$APP_DIR/$name" ]]; then
+            run cp -pP "$APP_DIR/$name" "$ROLLBACK_DIR/$name"
+        fi
+        SWAPPED_FILES+=("$name")
+        # rename() within one filesystem is atomic: a terminal opening mid-update
+        # sees either the old file or the new one, never a half-written file.
+        run mv -f "$STAGE_DIR/new/$name" "$APP_DIR/$name"
+    done
+
+    # Remove code files that the previous version shipped but this one doesn't.
+    if [[ -f "$APP_DIR/.manifest" ]]; then
+        local old
+        while IFS= read -r old; do
+            [[ -n "$old" && "$old" != */* ]] || continue
+            printf '%s\n' "${code_files[@]}" | grep -qxF "$old" && continue
+            run rm -f -- "$APP_DIR/$old"
+        done < "$APP_DIR/.manifest"
+    fi
+    printf '%s\n' "${code_files[@]}" > "$APP_DIR/.manifest"
+
+    run cp -R "$REPO_ROOT/files/gen_files" "$APP_DIR/"
+    run mkdir -p "$APP_DIR/cache"
+    run cp -R "$REPO_ROOT/files/cache/." "$APP_DIR/cache/"
+    find "$APP_DIR" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
+
+    SWAPPED_FILES=()   # committed; nothing to roll back past this point
+    ok
+}
+
+seed_user_data() {
+    if [[ ! -f "$APP_DIR/trainer.json" ]]; then
+        cp "$(app_files_dir)/trainer.json" "$APP_DIR/trainer.json"
+    fi
+
+    if [[ ! -f "$POKEDEX_FILE" ]]; then
+        touch "$POKEDEX_FILE"
         chmod 444 "$POKEDEX_FILE"
     fi
 
-    echo "Poketerm updated successfully from 0.0.2 to 0.0.3!"
-
-    write_version "0.0.3"
-}
-
-migrate_003_to_004() {
-    sudo -u "$LOCAL_USER" cp -f files/$VERSION/poketerm $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/poketerm
-
-    # create symlink in usr/bin if not present
-    if [ ! -e $BIN_DIR/poketerm ]; then
-        ln -s $INSTALL_DIR/poketerm/poketerm $BIN_DIR/poketerm || return 1
+    # Pokedexes from 0.0.1/0.0.2 stored one name per line with no count
+    # ("pikachu" instead of "pikachu 1"). Convert them, merging any duplicate
+    # lines, so they work with the current format. Already backed up above.
+    local migrated=false
+    if grep -qvE '[[:space:]][0-9]+[[:space:]]*$|^[[:space:]]*$' "$POKEDEX_FILE"; then
+        local converted
+        converted="$(mktemp "$APP_DIR/.pokedex.XXXXXX")"
+        awk '
+            /^[[:space:]]*$/ { next }
+            {
+                line = $0
+                sub(/[[:space:]]+$/, "", line)
+                count = 1
+                if (match(line, /[[:space:]][0-9]+$/)) {
+                    count = substr(line, RSTART + 1) + 0
+                    line = substr(line, 1, RSTART - 1)
+                    sub(/[[:space:]]+$/, "", line)
+                }
+                if (!(line in total)) order[++n] = line
+                total[line] += count
+            }
+            END { for (i = 1; i <= n; i++) print order[i], total[order[i]] }
+        ' "$POKEDEX_FILE" > "$converted"
+        chmod 444 "$converted"
+        mv -f "$converted" "$POKEDEX_FILE"
+        migrated=true
     fi
 
-    echo "To specify a specify pokedex version update the following line in your zshrc file: poketerm -> poketerm --gen N|N-M. e.g. poketerm --gen 1."
-    echo "Poketerm updated successfully from 0.0.3 to 0.0.4!"
-
-    write_version "0.0.4"
-}
-
-migrate_004_to_005() {
-    rm -rf "$INSTALL_DIR/poketerm/pokedex" "$INSTALL_DIR/poketerm/poketerm"
-    sudo -u "$LOCAL_USER" cp -rf files/cache $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" cp files/$VERSION/pokedex.py files/$VERSION/poketerm $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/pokedex.py $INSTALL_DIR/poketerm/poketerm
-
-    # create symlink in usr/bin
-    rm -rf $BIN_DIR/pokedex $BIN_DIR/poketerm || return 1
-    ln -s $INSTALL_DIR/poketerm/poketerm $BIN_DIR/poketerm
-    ln -s $INSTALL_DIR/poketerm/pokedex.py $BIN_DIR/pokedex
-
-    if ! python3 -c "import readchar" >/dev/null 2>&1; then
-        echo -e "\033[33mNote: The 'readchar' Python library is required to run the pokedex.\033[0m"
-        echo ""
-        echo "  Standard: pip3 install -r requirements.txt"
-        echo "  Linux:    sudo apt install python3-readchar (on Debian/Ubuntu)"
-        echo "-------------------------------------------------------"
+    # Older versions could leave an empty or missing hash, which made every new
+    # terminal report the Pokedex as tampered with.
+    if [[ "$migrated" == true || ! -s "$POKEDEX_HASH" ]]; then
+        sha256_file "$POKEDEX_FILE" > "$POKEDEX_HASH"
     fi
-
-    echo "Poketerm updated successfully from 0.0.4 to 0.0.5!"
-
-    write_version "0.0.5"
 }
 
-migrate_to_latest_version() {
-    PREV_VERSION="$(installed_version)"
-    rm -rf "$INSTALL_DIR/poketerm/pokedex.py" "$INSTALL_DIR/poketerm/poketerm" "$INSTALL_DIR/poketerm/cache"
-    sudo -u "$LOCAL_USER" cp -rf files/cache $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" cp -r files/$VERSION/* $INSTALL_DIR/poketerm
-    sudo -u "$LOCAL_USER" chmod +x $INSTALL_DIR/poketerm/pokedex.py $INSTALL_DIR/poketerm/poketerm
-
-    # create symlink in usr/bin
-    rm -rf $BIN_DIR/pokedex $BIN_DIR/poketerm || return 1
-    ln -s $INSTALL_DIR/poketerm/poketerm $BIN_DIR/poketerm
-    ln -s $INSTALL_DIR/poketerm/pokedex.py $BIN_DIR/pokedex
-
-    if ! python3 -c "import readchar" >/dev/null 2>&1; then
-        echo -e "\033[33mNote: The 'readchar' Python library is required to run the pokedex.\033[0m"
-        echo ""
-        echo "  Standard: pip3 install -r requirements.txt"
-        echo "  Linux:    sudo apt install python3-readchar (on Debian/Ubuntu)"
-        echo "-------------------------------------------------------"
-    fi
-
-    echo "Poketerm updated successfully from $PREV_VERSION to $VERSION!"
-
-    write_version $VERSION
+link_commands() {
+    step "Linking the poketerm and pokedex commands"
+    run mkdir -p "$BIN_DIR"
+    run ln -sfn "$APP_DIR/poketerm" "$BIN_DIR/poketerm"
+    run ln -sfn "$APP_DIR/pokedex.py" "$BIN_DIR/pokedex"
+    ok
 }
 
-### =========================
-### Update
-### =========================
-
-update() {
-    local current
-    current="$(installed_version)"
-
-    echo "Installed version: $current"
-
-    case "$current" in
-        0.0.1)
-            echo "Target version:    0.0.2"
-            migrate_001_to_002
-            ;;
-        0.0.2)
-            echo "Target version:    0.0.3"
-            migrate_002_to_003
-            ;;
-        0.0.3)
-            echo "Target version:    0.0.4"
-            migrate_003_to_004
-            ;;
-        0.0.4)
-            echo "Target version:    0.0.5"
-            migrate_004_to_005
-            ;;
-        0.0.5)
-            echo "Target version:    0.0.6"
-            migrate_to_latest_version
-            ;;
-        0.0.6)
-            echo "Already up to date."
-            exit 0
-            ;;
-        *)
-            echo "Unsupported update path: $current → $VERSION"
-            echo "Please reinstall."
-            exit 1
-            ;;
+# --- pokemon-go-colorscripts (fast Go build of pokemon-colorscripts) --------
+# https://github.com/scottmckendry/pokemon-go-colorscripts (MIT)
+# Pinned to a reviewed release. The SHA256 hashes below were recorded when
+# v0.3.1 was reviewed and match the release's checksums.txt; a download that
+# doesn't match is rejected. To upgrade: review the new release, then update
+# the version AND all four hashes together.
+GO_COLORSCRIPTS_VERSION="0.3.1"
+go_colorscripts_sha256() {
+    case "$1" in
+        darwin_arm64) echo "d1b4d35d33590854aa01f0b2ea5da6bee7b1676fdfe4a4b1e997e433e8635dc0" ;;
+        darwin_amd64) echo "f88871117cfbf967adeeb046793de161bee5588c6bd7eba6d2ceadcbb6d833fe" ;;
+        linux_amd64)  echo "0b8934ed246144c56c23b90be95e6f5db7cfe3ed0b04b62ccfae79829f2fbeb4" ;;
+        linux_arm64)  echo "1d860698a7dd0a4dfd7f7a22a4fb8954f6709cddede45fccacccc0dd3ce72642" ;;
     esac
 }
 
-### =========================
-### Uninstall
-### =========================
+go_colorscripts_skip() {
+    # Soft failure: poketerm falls back to the Python pokemon-colorscripts.
+    printf '%s' "$C_CLEAR"
+    warn "Skipped the faster Go sprites ($1) - using the Python version instead."
+    echo "go-colorscripts skipped: $1" >>"$LOG_FILE"
+    CURRENT_STEP=""
+    [[ -n "${go_tmp:-}" && -d "$go_tmp" ]] && rm -rf -- "$go_tmp"
+    return 1
+}
 
-uninstall() {
-    # Remove poketerm and pokemon-colorscripts directories
-    echo "Removing poketerm and pokemon-colorscripts shared directories"
-    sudo "$INSTALL_DIR"pokemon-colorscripts/uninstall.sh
-    rm -rf "$INSTALL_DIR/poketerm" "$INSTALL_DIR/pokemon-colorscripts" || return 1
+install_go_colorscripts() {
+    # Every step is checked explicitly: this function runs in a `||` context
+    # where `set -e` doesn't apply, and a failure must never abort the install.
+    local os arch platform expected dest actual file
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    case "$(uname -m)" in
+        x86_64|amd64)  arch=amd64 ;;
+        arm64|aarch64) arch=arm64 ;;
+        *) return 1 ;;
+    esac
+    platform="${os}_${arch}"
+    expected="$(go_colorscripts_sha256 "$platform")"
+    [[ -n "$expected" ]] || return 1
 
-    # Uninstall hyfetch if it was installed via Homebrew
-    if command -v hyfetch >/dev/null 2>&1; then
-        echo "Uninstalling hyfetch via brew"
-        sudo -u "$LOCAL_USER" brew unlink hyfetch >/dev/null 2>&1
-        sudo -u "$LOCAL_USER" brew uninstall hyfetch >/dev/null 2>&1
+    dest="$SHARE_DIR/pokemon-go-colorscripts"
+    if [[ -x "$dest/pokemon-go-colorscripts" && "$(cat "$dest/.version" 2>/dev/null)" == "$GO_COLORSCRIPTS_VERSION" ]]; then
+        ln -sfn "$dest/pokemon-go-colorscripts" "$BIN_DIR/pokemon-go-colorscripts" 2>>"$LOG_FILE" || true
+        return 0
+    fi
+    command -v curl >/dev/null 2>&1 || return 1
+
+    step "Installing faster sprites (pokemon-go-colorscripts $GO_COLORSCRIPTS_VERSION)"
+    go_tmp="$(mktemp -d)" || go_colorscripts_skip "no temp dir" || return 1
+    file="pokemon-go-colorscripts_${GO_COLORSCRIPTS_VERSION}_${platform}.tar.gz"
+    curl -fsSL --proto '=https' --tlsv1.2 --retry 2 --connect-timeout 10 --max-time 300 \
+        -o "$go_tmp/$file" \
+        "https://github.com/scottmckendry/pokemon-go-colorscripts/releases/download/v${GO_COLORSCRIPTS_VERSION}/${file}" \
+        >>"$LOG_FILE" 2>&1 || { go_colorscripts_skip "download failed"; return 1; }
+
+    actual="$(sha256_file "$go_tmp/$file" | cut -d' ' -f1)"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "expected sha256 $expected, got $actual" >>"$LOG_FILE"
+        go_colorscripts_skip "download did not match the pinned checksum"
+        return 1
     fi
 
-    # If zshrc.backup file exists from when poketerm was installed, restore it
-    if [ -f "./zshrc.backup" ]; then
-        echo "Restoring original ~/.zshrc from poketerm/zshrc.backup"
-        sudo -u "$LOCAL_USER" cp ./zshrc.backup $ZSHRC
+    tar -xzf "$go_tmp/$file" -C "$go_tmp" pokemon-go-colorscripts LICENSE >>"$LOG_FILE" 2>&1 \
+        || { go_colorscripts_skip "could not unpack"; return 1; }
+    "$go_tmp/pokemon-go-colorscripts" --no-title -n pikachu >/dev/null 2>>"$LOG_FILE" \
+        || { go_colorscripts_skip "binary did not run on this system"; return 1; }
+
+    { mkdir -p "$dest" "$BIN_DIR" \
+        && mv -f "$go_tmp/pokemon-go-colorscripts" "$dest/pokemon-go-colorscripts" \
+        && chmod 755 "$dest/pokemon-go-colorscripts"; } >>"$LOG_FILE" 2>&1 \
+        || { go_colorscripts_skip "could not install"; return 1; }
+    cp "$go_tmp/LICENSE" "$dest/LICENSE" 2>/dev/null || true
+    printf '%s\n' "$GO_COLORSCRIPTS_VERSION" > "$dest/.version"
+    ln -sfn "$dest/pokemon-go-colorscripts" "$BIN_DIR/pokemon-go-colorscripts" 2>>"$LOG_FILE" || true
+    rm -rf -- "$go_tmp"
+    ok
+}
+
+install_pokemon_colorscripts() {
+    # Fast path: the Go build. The Python one stays as the fallback.
+    install_go_colorscripts && return 0
+
+    command -v pokemon-colorscripts >/dev/null 2>&1 && return 0
+    [[ -x "$BIN_DIR/pokemon-colorscripts" ]] && return 0
+
+    step "Installing pokemon-colorscripts"
+    local dest="$SHARE_DIR/pokemon-colorscripts"
+    [[ -d "$dest" ]] && run rm -rf -- "$dest"
+    run git clone --depth 1 https://gitlab.com/phoneybadger/pokemon-colorscripts.git "$dest"
+    [[ -f "$dest/pokemon-colorscripts.py" ]] || { echo "pokemon-colorscripts.py missing after clone" >>"$LOG_FILE"; false; }
+    run chmod +x "$dest/pokemon-colorscripts.py"
+    run ln -sfn "$dest/pokemon-colorscripts.py" "$BIN_DIR/pokemon-colorscripts"
+    ok
+}
+
+write_install_info() {
+    if [[ "$DEV" == true ]]; then
+        printf '%s+dev\n' "$VERSION" > "$APP_DIR/VERSION"
+    else
+        printf '%s\n' "$VERSION" > "$APP_DIR/VERSION"
     fi
+
+    # Read by `poketerm --update` so updates land in the same place.
+    {
+        printf 'BIN_DIR=%s\n' "$BIN_DIR"
+        printf 'ZSHRC=%s\n' "$ZSHRC"
+        printf 'MODE=%s\n' "$([[ "$DEV" == true ]] && echo dev || echo release)"
+        [[ "$DEV" == true ]] && printf 'SOURCE=%s\n' "$REPO_ROOT"
+    } > "$APP_DIR/install.conf"
+
+    # Clear any cached "update available" notice.
+    rm -f "$APP_DIR/.update_check"
 }
 
 ### =========================
-### Entry point
+### Shell hook
 ### =========================
 
-if [[ "$UNINSTALL" == true ]]; then
-    uninstall
-elif [[ "$UPDATE" == true ]]; then
-    update
+has_hook() {
+    [[ -f "$ZSHRC" ]] && grep -qxF "$ZSHRC_MARKER_BEGIN" "$ZSHRC"
+}
+
+remove_zshrc_hook() {
+    [[ -f "$ZSHRC" ]] || return 0
+    local filtered
+    filtered="$(mktemp)"
+    # Also drops the blank line(s) the installer put around the block, so
+    # moving the block doesn't leave gaps behind.
+    awk -v begin="$ZSHRC_MARKER_BEGIN" -v end="$ZSHRC_MARKER_END" '
+        $0 == begin { skip = 1; blanks = 0; next }
+        skip && $0 == end { skip = 0; after = 1; next }
+        skip { next }
+        /^[[:space:]]*$/ { if (!(after && !printed)) blanks++; next }
+        { while (blanks > 0) { print ""; blanks-- } print; printed = 1; after = 0 }
+    ' "$ZSHRC" > "$filtered"
+    cat "$filtered" > "$ZSHRC"   # keep the file's owner/permissions/symlink
+    rm -f "$filtered"
+}
+
+hook_block() {
+    awk -v begin="$ZSHRC_MARKER_BEGIN" -v end="$ZSHRC_MARKER_END" '
+        $0 == begin { inside = 1; next }
+        $0 == end   { inside = 0 }
+        inside { print }
+    ' "$ZSHRC"
+}
+
+# Line where the hook has to go so it runs before Powerlevel10k's instant
+# prompt (the comment lines directly above its `if` included), or nothing if
+# the zshrc doesn't use instant prompt. p10k warns about any console output
+# printed after that block, so poketerm's output must come before it.
+p10k_insert_line() {
+    [[ -f "$ZSHRC" ]] || return 0
+    awk '
+        /^[[:space:]]*#/ { if (!c) c = NR; next }
+        /p10k-instant-prompt/ { print (c ? c : NR); exit }
+        { c = 0 }
+    ' "$ZSHRC"
+}
+
+hook_line() {
+    grep -nxF "$ZSHRC_MARKER_BEGIN" "$ZSHRC" 2>/dev/null | head -n 1 | cut -d: -f1
+}
+
+ensure_zshrc_hook() {
+    # On update, keep the user's existing hook (and their --gen choice) unless
+    # a new --gen was given, it's from an old version, or it sits below
+    # Powerlevel10k's instant prompt.
+    if has_hook && [[ -z "$GEN" ]]; then
+        local block p10k_at
+        block="$(hook_block)"
+        p10k_at="$(p10k_insert_line)"
+        if grep -q '^export PATH=' <<< "$block" \
+           && { [[ -z "$p10k_at" ]] || (( $(hook_line) < p10k_at )); }; then
+            return 0
+        fi
+        GEN="$(sed -nE 's/.*poketerm --gen ([0-9]+(-[0-9]+)?).*/\1/p' <<< "$block" | head -n 1)"
+    fi
+
+    step "Adding poketerm to $ZSHRC"
+    if ! touch "$ZSHRC" 2>>"$LOG_FILE"; then
+        printf '%s' "$C_CLEAR"
+        warn "Could not write to $ZSHRC. Run: ./install.sh --zshrc /path/to/.zshrc"
+        CURRENT_STEP=""
+        return 0
+    fi
+    cp -p "$ZSHRC" "$APP_DIR/zshrc.backup" 2>/dev/null || true
+    remove_zshrc_hook
+
+    local hook_file
+    hook_file="$(mktemp)"
+    {
+        printf '%s\n' "$ZSHRC_MARKER_BEGIN"
+        printf 'export PATH="%s:$PATH"\n' "$BIN_DIR"
+        printf 'if command -v poketerm >/dev/null 2>&1; then\n'
+        if [[ -n "$GEN" ]]; then
+            printf '  poketerm --gen %s\n' "$GEN"
+        else
+            printf '  poketerm\n'
+        fi
+        printf 'fi\n'
+        printf '%s\n' "$ZSHRC_MARKER_END"
+    } > "$hook_file"
+
+    local insert_at
+    insert_at="$(p10k_insert_line)"
+    if [[ -n "$insert_at" ]]; then
+        local merged
+        merged="$(mktemp)"
+        awk -v n="$insert_at" -v f="$hook_file" '
+            NR == n { while ((getline l < f) > 0) print l; print "" }
+            { print }
+        ' "$ZSHRC" > "$merged"
+        cat "$merged" > "$ZSHRC"
+        rm -f "$merged"
+    else
+        { printf '\n'; cat "$hook_file"; } >> "$ZSHRC"
+    fi
+    rm -f "$hook_file"
+    ok
+}
+
+### =========================
+### Entry points
+### =========================
+
+do_install() {
+    local previous="" first_install=true hook_existed=false
+    if has_existing_install; then
+        first_install=false
+        previous="$(installed_version)"
+    fi
+    has_hook && hook_existed=true
+
+    if [[ "$MODE" == update && "$first_install" == true ]]; then
+        echo "No existing Poketerm install found - installing $VERSION instead."
+    elif [[ "$first_install" == true ]]; then
+        echo "Installing Poketerm $VERSION"
+    else
+        echo "Updating Poketerm ${previous} -> ${VERSION}$([[ "$DEV" == true ]] && echo " (dev mode)")"
+    fi
+
+    LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/poketerm-install.XXXXXX")"
+    trap on_error ERR
+
+    preflight
+    backup_progress
+    install_code
+    seed_user_data
+    link_commands
+    install_pokemon_colorscripts
+    write_install_info
+    ensure_zshrc_hook
+
+    trap - ERR
+    rm -f "$LOG_FILE"
+
+    echo ""
+    if [[ "$first_install" == true ]]; then
+        echo "${C_GREEN}Poketerm $VERSION installed!${C_RESET} Ready to catch Pokemon."
+        echo "Open a new terminal (or run: source $ZSHRC) to catch your first one."
+    else
+        echo "${C_GREEN}Poketerm is now on $VERSION.${C_RESET} Your Pokedex and trainer progress were kept."
+        if [[ "$hook_existed" == true ]]; then
+            echo "Open a new terminal to see it."
+        else
+            echo "Open a new terminal (or run: source $ZSHRC) to see it."
+        fi
+    fi
+    if [[ "$DEV" == true ]]; then
+        echo "Dev mode: code is linked to $REPO_ROOT/files/current - edits apply to the next terminal."
+    fi
+}
+
+do_uninstall() {
+    echo "Removing Poketerm files and app data..."
+
+    if [[ -f "$SHARE_DIR/pokemon-colorscripts/uninstall.sh" ]]; then
+        "$SHARE_DIR/pokemon-colorscripts/uninstall.sh" || true
+    fi
+    [[ -n "$INSTALL_ROOT" && -d "$APP_DIR" ]] && rm -rf -- "$APP_DIR"
+    [[ -n "$INSTALL_ROOT" && -d "$SHARE_DIR/pokemon-colorscripts" ]] && rm -rf -- "$SHARE_DIR/pokemon-colorscripts"
+    [[ -n "$INSTALL_ROOT" && -d "$SHARE_DIR/pokemon-go-colorscripts" ]] && rm -rf -- "$SHARE_DIR/pokemon-go-colorscripts"
+    rm -f "$BIN_DIR/poketerm" "$BIN_DIR/pokedex" "$BIN_DIR/pokemon-colorscripts" "$BIN_DIR/pokemon-go-colorscripts"
+
+    if has_hook; then
+        echo ""
+        echo "⚠️  Please remove the Poketerm block from: $ZSHRC"
+        echo "Look for the lines beginning with: $ZSHRC_MARKER_BEGIN"
+        echo "and ending with: $ZSHRC_MARKER_END"
+    fi
+}
+
+if [[ "$MODE" == uninstall ]]; then
+    do_uninstall
 else
-    install
+    do_install
 fi
