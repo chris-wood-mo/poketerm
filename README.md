@@ -143,11 +143,12 @@ When the shell starts, Poketerm will auto-run and keep catching Pokemon in your 
 
 Swap Pokemon with a friend on the same network.
 
-1. You both open the Pokedex and press `t`.
-2. Pick the Pokemon you want to give and press `Enter`, then pick your friend from **Trainers nearby** and press `Enter`.
+1. You both open the Pokedex and press `t`. The trade page shows **Trainers nearby**.
+2. Pick your friend and press `Enter` to invite them.
 3. Your friend sees your invite. **Check the 6-digit pairing code is the same on both screens**, then they press `y`.
-4. Your friend picks the Pokemon they'll give you. When you're both happy, you each press `y` to confirm.
-5. Your Pokemon is sent off in its Poke Ball, and the one you receive pops out of a Poke Ball.
+4. You each choose the Pokemon you'll give and press `Enter`. You see each other's choice straight away and can change yours until you confirm.
+5. When you're both happy, you each press `y` to confirm.
+6. Your Pokemon is sent off in its Poke Ball, and the one you receive pops out of a Poke Ball.
 
 Good to know:
 

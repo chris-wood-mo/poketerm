@@ -249,6 +249,9 @@ class Runner:
 
     # -- scenarios ---------------------------------------------------------
     def run_all(self):
+        # A private discovery channel for this run: test trainers must never see,
+        # or be seen by, real trainers on the network.
+        os.environ["POKETERM_DISCOVERY_PORT"] = str(47400 + os.getpid() % 500)
         self.install()
         # Ask the Python poketerm will really use (its own, or the system one).
         r = subprocess.run([self.python("ash"), "-c", "import trade_store as s; print(s.check_requirements() or '')"],
@@ -555,13 +558,10 @@ def ui_trade(runner, by_address):
         for t in (A, B):
             t.wait(r"Page 1/"); t.mark(); t.send("t")
         for t in (A, B):
-            t.wait(r"Trades left today: 5/5")
-        A.wait(r"> Bulbasaur")
-        A.mark(); A.send("\x1b[B"); A.wait(r"Selected: Pikachu")
-        A.mark(); A.send("\r"); A.wait(r"Trainers nearby")
+            t.wait(r"Trades left today: 5/5"); t.wait(r"Trainers nearby")
+        # 1. Find each other
         if by_address:
-            B.mark(); B.send("\r"); addr = B.wait(r"Your address: [0-9.]+:(\d+)").group(1)
-            B.send("b"); B.wait(r"Your Pokemon:")
+            addr = B.wait(r"Your address: [0-9.]+:(\d+)").group(1)
             A.mark(); A.send("c"); A.wait(r"Connect by address")
             A.send(f"127.0.0.1:{addr}"); A.mark(); A.send("\r")
         else:
@@ -573,13 +573,16 @@ def ui_trade(runner, by_address):
                 A.mark(); A.send("\x1b[B"); A.pump(0.6)
             A.wait(r"> Misty", 5)
             A.mark(); A.send("\r")
+        # 2. Pairing code, accept
         found["code_a"] = A.wait(r"Pairing code: (\d{3} \d{3})").group(1)
-        B.wait(r"Ash wants to trade with you"); B.wait(r"offering: Pikachu")
+        B.wait(r"Ash wants to trade with you")
         found["code_b"] = B.wait(r"Pairing code: (\d{3} \d{3})").group(1)
         B.mark(); A.mark(); B.send("y")
-        B.wait(r"You get:\s+Pikachu")
-        B.send("\x1b[B"); B.mark(); B.send("\r")
-        A.wait(r"You get:\s+Staryu")
+        # 3. Both choose (Ash: 2nd = Pikachu, Misty: 2nd = Staryu)
+        A.wait(r"choose below"); B.wait(r"choose below")
+        A.send("\x1b[B"); A.mark(); A.send("\r"); A.wait(r"You give: Pikachu")
+        B.send("\x1b[B"); B.mark(); B.send("\r"); B.wait(r"You give: Staryu")
+        A.wait(r"You get:\s+Staryu"); B.wait(r"You get:\s+Pikachu")
         A.mark(); A.send("y"); B.wait(r"Ash confirmed")
         B.mark(); B.send("y")
         # Each side plays two ~2.5s animations; allow for slow or busy machines.
@@ -683,6 +686,7 @@ def unit_tests():
 
     # You can't trade with yourself: you never see your own announcements,
     # and connecting to your own trade port is refused.
+    os.environ["POKETERM_DISCOVERY_PORT"] = str(47400 + os.getpid() % 500)
     import trade_lan as lan
     os.makedirs(store.TRADE_DIR, exist_ok=True)
     for n in (store.KEY_FILE, store.CERT_FILE):

@@ -1,9 +1,11 @@
 """The trading screens in the Pokedex (press `t`), and the trade animations."""
+import errno
 import json
 import os
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -310,7 +312,9 @@ class TradePage:
         self.notices = queue.Queue()         # text to flash in the status line
         self.items = []
         self.cursor = 0
-        self.view = "list"                   # list | trainers | address | session
+        self.view = "trainers"               # trainers | address | connecting | session
+        self.connecting = None               # {"label", "cancelled"} while connecting
+        self.connected = queue.Queue()       # (attempt, channel or error) from the connect thread
         self.peer_cursor = 0
         self.address = ""
         self.status = ""
@@ -346,6 +350,8 @@ class TradePage:
 
     def close(self):
         self.stop.set()
+        if self.connecting:
+            self.connecting["cancelled"] = True
         if self.session:
             self.session.cancel()
         for part in (self.discovery, self.listener):
@@ -353,7 +359,8 @@ class TradePage:
                 part.close()
         while not self.incoming.empty():
             try:
-                self.incoming.get_nowait().close()
+                channel, _, _ = self.incoming.get_nowait()
+                channel.close(linger=0)
             except (queue.Empty, OSError):
                 pass
 
@@ -443,7 +450,7 @@ class TradePage:
 
     def pump(self):
         """React to network events. True if the screen needs redrawing."""
-        changed = False
+        changed = self.finish_connect()
         while not self.notices.empty():
             changed = True
             text, colour = self.notices.get_nowait()
@@ -454,19 +461,31 @@ class TradePage:
                 pass
         while not self.incoming.empty():
             channel, hello, validator = self.incoming.get_nowait()
-            if self.session or store.trades_left_today() == 0:
-                reason = "busy" if self.session else "no trades left today"
+            try:
+                self.refresh_items()
+            except store.TradeError:
+                self.items = []
+            name = self.trainer["name"][:20]
+            if self.session:
+                busy = f"{name} is busy with another trade."
+            elif store.trades_left_today() == 0:
+                busy = f"{name} has no trades left today."
+            elif not self.items:
+                busy = f"{name} has no Pokemon to trade yet."
+            else:
+                busy = None
+            if busy:
                 try:
-                    channel.send(proto.message("bye", reason=f"{self.trainer['name'][:20]} is {reason}."))
+                    channel.send(proto.message("bye", reason=busy))
                 except OSError:
                     pass
                 channel.close()
                 continue
             self.session = proto.TradeSession(channel, self.identity, self.trainer["name"], "b",
                                               first_hello=hello, validator=validator)
+            self.cursor = 0
             self.session.start()
             self.view = "session"
-            sys.stdout.write("\a")
             changed = True
         if self.session:
             while not self.session.events.empty():
@@ -484,19 +503,23 @@ class TradePage:
         except Exception:
             pass                 # an animation problem must never hide the result
         self.session = None
-        self.view = "list"
+        self.view = "trainers"
         sys.stdout.write("\033[2J")
         self.refresh_items()
         self.flash(f"Trade complete! You got {store.display(result['got'])} from {result['peer']}.")
 
     # -- keys --------------------------------------------------------------
     def handle_key(self, key):
-        if self.view == "list":
-            return self.keys_list(key)
         if self.view == "trainers":
             return self.keys_trainers(key)
         if self.view == "address":
             return self.keys_address(key)
+        if self.view == "connecting":
+            if key in ("q", "x", "b", "\x1b"):
+                if self.connecting:
+                    self.connecting["cancelled"] = True
+                self.connecting, self.view = None, "trainers"
+            return
         if self.view == "session":
             return self.keys_session(key)
 
@@ -511,29 +534,24 @@ class TradePage:
             return max(0, (cursor // PAGE_SIZE - 1) * PAGE_SIZE)
         return cursor
 
-    def keys_list(self, key):
-        if key in ("q", "b"):
-            return "quit"
-        if key == readchar.key.ENTER:
-            if not self.items:
-                return
-            if store.trades_left_today() == 0:
-                self.flash(f"You've used all {store.DAILY_LIMIT} trades for today.", RED)
-                return
-            self.view, self.peer_cursor = "trainers", 0
-            self.status = ""
-            return
-        self.cursor = self.move(key, self.cursor, len(self.items))
+    def can_trade(self):
+        """True if a trade can start now; otherwise says why."""
+        if not self.items:
+            self.flash("You don't have any Pokemon to trade yet - catch some first!", RED)
+            return False
+        if store.trades_left_today() == 0:
+            self.flash(f"You've used all {store.DAILY_LIMIT} trades for today.", RED)
+            return False
+        return True
 
     def keys_trainers(self, key):
         peers = self.discovery.nearby()
         if key in ("q", "b", "\x1b"):
-            self.view = "list"
-            return
+            return "quit"
         if key == "c":
             self.view, self.address = "address", ""
             return
-        if key == readchar.key.ENTER and peers:
+        if key == readchar.key.ENTER and peers and self.can_trade():
             peer = peers[min(self.peer_cursor, len(peers) - 1)]
             self.start_trade(peer["host"], peer["port"], peer["fp"], peer["name"])
             return
@@ -549,32 +567,74 @@ class TradePage:
             if not m or not 0 < int(m.group(2)) < 65536:
                 self.flash("Type the address shown on the other trainer's screen, e.g. 192.168.1.20:51234", RED)
                 return
-            self.start_trade(m.group(1), int(m.group(2)), None, m.group(1))
+            if self.can_trade():
+                self.start_trade(m.group(1), int(m.group(2)), None, m.group(1))
         elif len(key) == 1 and (key.isalnum() or key in ".:-") and len(self.address) < 40:
             self.address += key
 
     def start_trade(self, host, port, fp, label):
-        offer = self.items[self.cursor]
-        self.flash(f"Connecting to {label}...", YELLOW)
-        self.draw()
-        try:
-            channel = lan.connect(self.identity, host, port, fp)
-        except (OSError, lan.ChannelClosed) as e:
-            self.flash(f"Couldn't reach {label}: {e}", RED)
-            self.view = "trainers"
-            return
-        self.session = proto.TradeSession(channel, self.identity, self.trainer["name"], "a",
-                                          my_offer={"name": offer["name"], "shiny": offer["shiny"]})
-        self.session.start()
-        self.view = "session"
-        self.status = ""
+        """Invite a trainer. Both of you choose your Pokemon once they accept.
+
+        Connecting happens in the background, so the screen stays responsive
+        (and q/x leave at once) even if the other computer doesn't answer."""
+        attempt = {"label": label, "cancelled": False}
+        self.connecting, self.view, self.status = attempt, "connecting", ""
+
+        def work():
+            try:
+                result = lan.connect(self.identity, host, port, fp, timeout=6)
+            except (OSError, lan.ChannelClosed) as e:
+                result = e
+            self.connected.put((attempt, result))
+        threading.Thread(target=work, daemon=True).start()
+
+    def finish_connect(self):
+        """Pick up a finished connection attempt. True if the screen changed."""
+        changed = False
+        while not self.connected.empty():
+            attempt, result = self.connected.get_nowait()
+            if attempt is not self.connecting or attempt["cancelled"]:
+                if isinstance(result, lan.Channel):
+                    result.close(linger=0)          # given up on: hang up
+                continue
+            self.connecting = None
+            changed = True
+            if not isinstance(result, lan.Channel):
+                self.view = "trainers"
+                self.flash(self.connect_problem(attempt["label"], result), RED)
+                continue
+            self.session = proto.TradeSession(result, self.identity, self.trainer["name"], "a")
+            self.cursor = 0
+            self.session.start()
+            self.view = "session"
+        return changed
+
+    def terminal_app(self):
+        return {"Apple_Terminal": "Terminal", "iTerm.app": "iTerm", "vscode": "Visual Studio Code",
+                "WarpTerminal": "Warp", "ghostty": "Ghostty"}.get(os.environ.get("TERM_PROGRAM", ""),
+                                                                  "your terminal app")
+
+    def connect_problem(self, label, e):
+        """A plain-words reason a connection failed, and what to do about it."""
+        code = getattr(e, "errno", None)
+        if code in (errno.EHOSTUNREACH, errno.ENETUNREACH, errno.EPERM, errno.EACCES) and sys.platform == "darwin":
+            return (f"macOS blocked the connection to {label}. Allow {self.terminal_app()} in System Settings > "
+                    f"Privacy & Security > Local Network on this Mac, then try again.")
+        if code in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+            return f"Couldn't reach {label}: no route to their computer. Are you on the same network?"
+        if code == errno.ECONNREFUSED:
+            return f"{label} isn't on their trade page any more."
+        if isinstance(e, (TimeoutError, socket.timeout)) or code == errno.ETIMEDOUT:
+            return (f"{label} didn't answer. A firewall on their computer may be blocking poketerm "
+                    f"(on a Mac: allow Python when macOS asks about incoming connections).")
+        return f"Couldn't reach {label}: {e}"
 
     def keys_session(self, key):
         snap = self.session.snapshot()
         phase = snap["phase"]
         if phase in ("failed", "pending"):
             self.session = None
-            self.view = "list"
+            self.view = "trainers"
             try:
                 self.refresh_items()
             except store.TradeError:
@@ -650,12 +710,13 @@ class TradePage:
     def draw(self):
         s = Screen()
         self.header(s)
-        if self.view == "list":
-            self.draw_list(s)
-        elif self.view == "trainers":
+        if self.view == "trainers":
             self.draw_trainers(s)
         elif self.view == "address":
             self.draw_address(s)
+        elif self.view == "connecting" and self.connecting:
+            s.row(f"Connecting to {BOLD}{self.connecting['label']}{RESET}...")
+            self.footer(s, f"{YELLOW}x{RESET} = Cancel")
         elif self.view == "session" and self.session:
             self.draw_session(s)
         s.show()
@@ -670,19 +731,7 @@ class TradePage:
                    f"({store.display(p['give'])} for {store.display(p['receive'])}) - it completes "
                    f"automatically when you're both on this page.", YELLOW)
 
-    def draw_list(self, s):
-        s.row(f"{YELLOW}Your Pokemon:{RESET}")
-        self.pokemon_rows(s)
-        if self.items:
-            s.sep()
-            s.row(f"{YELLOW}Selected:{RESET} {pokemon_label(self.items[self.cursor])}")
-        self.pending_line(s)
-        self.footer(s, f"{GREEN}Enter{RESET} = Offer trade  {GREEN}↑/↓ ←/→{RESET} = Move  {YELLOW}q{RESET} = Back")
-
     def draw_trainers(self, s):
-        offer = self.items[self.cursor]
-        s.row(f"{YELLOW}Offering:{RESET} {pokemon_label(offer)}")
-        s.sep()
         s.row(f"{YELLOW}Trainers nearby with their trade page open:{RESET}")
         peers = self.discovery.nearby()
         self.peer_cursor = max(0, min(self.peer_cursor, len(peers) - 1))
@@ -700,16 +749,18 @@ class TradePage:
         s.sep()
         s.row(f"{GREY}Not listed? Press c to type an address.{RESET}")
         s.row(f"{GREY}Your address: {self.address_text}{RESET}")
-        self.footer(s, f"{GREEN}Enter{RESET} = Invite  {GREEN}c{RESET} = Enter address  {YELLOW}b{RESET} = Back")
+        self.pending_line(s)
+        if not self.items:
+            s.row(f"{RED}You don't have any Pokemon to trade yet - catch some first!{RESET}")
+        self.footer(s, f"{GREEN}Enter{RESET} = Invite  {GREEN}↑/↓{RESET} = Move  {GREEN}c{RESET} = Enter address  "
+                       f"{YELLOW}q{RESET} = Back")
 
     def discovery_help(self, s):
         """Why nobody's listed yet, and what to do about it."""
         d = self.discovery
         if d.blocked():
             if sys.platform == "darwin":
-                app = {"Apple_Terminal": "Terminal", "iTerm.app": "iTerm", "vscode": "Visual Studio Code",
-                       "WarpTerminal": "Warp", "ghostty": "Ghostty"}.get(os.environ.get("TERM_PROGRAM", ""),
-                                                                         "your terminal app")
+                app = self.terminal_app()
                 s.wrap(f"macOS is blocking {app} from your local network, so nobody can see you. "
                        f"Turn it on in System Settings > Privacy & Security > Local Network, "
                        f"then open this page again.", RED)
@@ -751,6 +802,8 @@ class TradePage:
             s.row(f"{BOLD}{peer}{RESET} wants to trade with you!")
             if snap["peer_offer"]:
                 s.row(f"They're offering: {pokemon_label(snap['peer_offer'])}")
+            else:
+                s.row(f"{GREY}If you accept, you'll both choose a Pokemon to trade.{RESET}")
             if snap["peer_trades_left"] is not None:
                 s.row(f"{GREY}{peer} has {snap['peer_trades_left']} trades left today.{RESET}")
             s.sep()

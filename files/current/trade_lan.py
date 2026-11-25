@@ -17,6 +17,7 @@ Channel with the same methods.
 """
 import errno
 import json
+import os
 import re
 import shutil
 import socket
@@ -31,7 +32,9 @@ import trade_protocol as proto
 import trade_store as store
 
 DISCOVERY_GROUP = "239.255.42.99"
-DISCOVERY_PORT = 47324
+# POKETERM_DISCOVERY_PORT is for tests only: it gives a test run its own
+# private discovery channel, so test trainers and real ones never see each other.
+DISCOVERY_PORT = int(os.environ.get("POKETERM_DISCOVERY_PORT") or 47324)
 BEACON_INTERVAL = 1.0
 PEER_EXPIRY = 4.0
 MAX_FRAME = 64 * 1024
@@ -89,7 +92,7 @@ class Channel:
         if self.closed:
             raise ChannelClosed("connection closed")
         with self._send_lock:
-            self.sock.settimeout(10)
+            self.sock.settimeout(5)
             _send_frame(self.sock, obj)
 
     def recv(self, timeout=0.5):
