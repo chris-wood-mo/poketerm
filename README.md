@@ -140,16 +140,6 @@ Good to know:
 - **On macOS:** allow your terminal app under **System Settings → Privacy & Security → Local Network**. If asked, let Python accept incoming connections.
 - **Dropped connections:** if the connection drops at the last moment, nothing is lost. The trade finishes the next time you're both on the trade page.
 
-<details>
-<summary>How trades are kept safe</summary>
-
-- **Encryption:** every connection is encrypted (TLS 1.3), and each trainer has their own identity key.
-- **Pairing code:** the code you compare on screen confirms you're connected to your friend and nobody else.
-- **All or nothing:** a trade completes on both sides or not at all, even if a laptop closes mid-trade. An unfinished trade is settled automatically the next time you connect.
-- **Tamper-proof history:** a trade history that's been edited is detected, and trading pauses.
-
-</details>
-
 ## Your Pokémon's stories
 
 Every Pokémon you catch is remembered individually. Open one in the Pokédex and use `←` `→` to step through each one you have. Press `s` to switch between normal and shiny.
