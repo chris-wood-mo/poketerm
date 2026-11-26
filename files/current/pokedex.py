@@ -109,6 +109,7 @@ def get_all_gen_progress():
 # Rendering
 # -----------------------
 LIST_WIDTH = 40          # the list screen's width inside the device
+LIST_HEADER = 6          # rows above the list: title, gap, caught count, progress bar, rule, column names
 MAX_PAGE = 15            # list rows when the window has room
 GREY = "\033[38;5;245m"
 BOLD = "\033[1m"
@@ -167,6 +168,26 @@ def home_region(name):
         except SystemExit:
             pass
     return "Unknown"
+
+
+INFO_SOFT = "\033[38;5;65m"                      # lighter text on the green display
+INFO_RULE = f"{INFO_SOFT}{'─' * 28}\033[0m"     # a divider on the green display
+_region_cache = {}
+
+
+def region_of(name):
+    if name not in _region_cache:
+        _region_cache[name] = home_region(name)
+    return _region_cache[name]
+
+
+def types_of(name):
+    """A Pokemon's types from the local data cache (empty if not cached yet)."""
+    try:
+        data = json.loads((Path.home() / f".local/share/poketerm/cache/api_data/{name.lower()}.json").read_text())
+        return [t for t in data.get("types", []) if isinstance(t, str)][:2]
+    except (OSError, ValueError, AttributeError):
+        return []
 
 
 def pretty(name):
@@ -301,7 +322,7 @@ def row(text, selected, width):
 
 def list_page_size():
     import device
-    return max(3, device.screen_rows(LIST_WIDTH, MAX_PAGE + 4) - 4)
+    return max(3, device.screen_rows(LIST_WIDTH, MAX_PAGE + LIST_HEADER) - LIST_HEADER)
 
 
 def draw(gen, cursor, pkm_list, pokedex):
@@ -318,11 +339,20 @@ def draw(gen, cursor, pkm_list, pokedex):
     W = min(LIST_WIDTH, device.available_width())
     tight = W < 36                              # narrow window: single spaces between columns
     gap, name_w = (" ", max(6, W - 19)) if tight else ("  ", 15)
-    filled = round(14 * caught / total) if total else 0
-    bar = f"{GREEN}{'█' * filled}{GREY}{'░' * (14 - filled)}{RESET}"
+    # Caught count on the left, percentage on the right, and a full-width
+    # progress bar under them (the same gauge style as the stat bars).
+    pct = round(100 * caught / total) if total else 0
+    count = f"Caught {caught} of {total}"
+    bar_w = W - 2
+    filled = round(bar_w * caught / total) if total else 0
+    if caught and not filled:
+        filled = 1                                  # any progress shows
+    bar = f"\033[38;5;71m{'▆' * filled}\033[38;5;238m{'▆' * (bar_w - filled)}{RESET}"
     lines = [
         f"{YELLOW}{BOLD}{f'GENERATION {gen} POKEDEX':^{W}}{RESET}",
-        f" {GREEN if caught else RED}Caught {caught}/{total}{RESET}  {bar} {round(100 * caught / total) if total else 0}%",
+        "",
+        f" {GREEN if caught else RED}{count}{RESET}{' ' * max(1, W - 2 - len(count) - len(f'{pct}%'))}{BOLD}{pct}%{RESET}",
+        f" {bar}",
         f"{GREY}{'─' * W}{RESET}",
         f"{GREY} No.{gap}{'Pokemon':<{name_w}}{gap}Normal{gap}Shiny{RESET}" if not tight
         else f"{GREY} No. {'Pokemon':<{name_w}} Norm.  Shiny{RESET}",
@@ -346,14 +376,21 @@ def draw(gen, cursor, pkm_list, pokedex):
     sel = pkm_list[cursor]
     n = pokedex.get(sel, {}).get("normal", 0)
     sh = pokedex.get(sel, {}).get("shiny", 0)
-    info = [f"No. {dex_number(sel):03d}", f"{BOLD}{pretty(sel).upper()}{RESET}", ""]
+    info = [f"No. {dex_number(sel):03d}", f"{BOLD}{pretty(sel).upper()}{RESET}"]
+    kinds = " · ".join(t.title() for t in types_of(sel))
+    info += [f"{kinds}{'  ' if kinds else ''}{INFO_SOFT}{region_of(sel)}{RESET}", INFO_RULE]
     if n or sh:
-        info += [f"Normal  {'✔' if n else '✖'} {n}", f"Shiny   {'★' if sh else '✖'} {sh}"]
+        info += [f"{'Normal':<10}{'✔' if n else INFO_SOFT + '✖' + RESET}  {n}",
+                 f"{'Shiny':<10}{'★' if sh else INFO_SOFT + '✖' + RESET}  {sh}"]
         trades = traded_from(sel)
         if trades:
-            info += ["", f"Traded: from {trades[0]['peer']}"]
+            peers = list(dict.fromkeys(t["peer"] for t in trades))
+            more = f" +{len(peers) - 1}" if len(peers) > 1 else ""
+            info += [INFO_RULE, f"Traded from {peers[0][:12]}{more}"]
+        info += ["", f"{INFO_SOFT}⏎ to see your {pretty(sel)[:12]}{RESET}"]
     else:
-        info += ["Not caught yet", "", "Keep opening terminals", "to find one!"]
+        info += ["Not caught yet", "", f"{INFO_SOFT}Keep opening terminals{RESET}",
+                 f"{INFO_SOFT}to find one!{RESET}"]
     keys = [("↑↓", "Move"), ("←→", "Page"), ("⏎", "Entry"), ("/", "Search"), ("s", "Settings"),
             ("p", "Trainer"), ("h", "History"), ("a", "Awards"), ("t", "Trade"), ("q", "Quit")]
     device.show(lines, width=W, info=info, keys=keys,
@@ -496,23 +533,33 @@ def draw_details(name, has_normal, has_shiny, showcase=False):
             W = min(max(46, sprite_w + 4), device.available_width())    # narrow window: narrow screen
             label = "★ SHINY" if current == "shiny" else "NORMAL"
 
-            below = [f"{GREY}{'─' * W}{RESET}"]
-            if showcase:
-                below = []
-            elif rec:
+            def about(r, i):
+                """The lines under the sprite for Pokemon `r` (number i+1 of this kind)."""
+                if r is None:
+                    return [f"{GREY}You don't have a {pretty(name)} right now.{RESET}"]
                 n = len(group)
-                count = f"{pick + 1} of {n} {current}" + ("  ◀ ▶" if n > 1 else "")
-                heart = f"{RED}♥{RESET} " if rec.get("favourite") else ""
-                title_text = (f'"{rec["nickname"]}" {GREY}the {pretty(name)}{RESET}' if rec.get("nickname")
+                count = f"{i + 1} of {n} {current}" + ("  ◀ ▶" if n > 1 else "")
+                heart = f"{RED}♥{RESET} " if r.get("favourite") else ""
+                title_text = (f'"{r["nickname"]}" {GREY}the {pretty(name)}{RESET}' if r.get("nickname")
                               else f"YOUR {pretty(name).upper()}")
-                below.append(f"{heart}{YELLOW}{BOLD}{title_text}{RESET}  {GREY}{count}{RESET}")
-                below += story(rec, W)
-                if rec.get("favourite"):
-                    below.append(f"{RED}♥ Favourite{RESET} {GREY}- protected from trading{RESET}")
-                if groups[other]:
+                out = [f"{heart}{YELLOW}{BOLD}{title_text}{RESET}  {GREY}{count}{RESET}"] + story(r, W)
+                if r.get("favourite"):
+                    out.append(f"{RED}♥ Favourite{RESET} {GREY}- protected from trading{RESET}")
+                return device.wrap_lines(out, W)          # counted as drawn: long lines wrap
+
+            below = [] if showcase else [f"{GREY}{'─' * W}{RESET}"]
+            if not showcase:
+                below += about(rec, pick)
+                if rec and groups[other]:
                     below.append(f"{GREY}You also have {len(groups[other])} {other} - press s{RESET}")
-            else:
-                below.append(f"{GREY}You don't have a {pretty(name)} right now.{RESET}")
+                # Every one of this Pokemon - normal or shiny, favourite or not,
+                # traded or not - gets the same height, so stepping through them,
+                # switching with s or pressing f never resizes the page. The spare
+                # rows go at the very bottom, so the text itself never has gaps.
+                everyone = [r for g in ("normal", "shiny") for r in groups[g]]
+                tallest = max([len(about(dict(r, favourite=True), 0)) for r in everyone] or [0])
+                tallest += 1 if groups["normal"] and groups["shiny"] else 0     # the "press s" line
+                below += [""] * (tallest - (len(below) - 1))
 
             if showcase:
                 keys = [("←→", other.title()), ("b", "Back")]

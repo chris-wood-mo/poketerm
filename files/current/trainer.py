@@ -442,18 +442,24 @@ def render_trainer_profile(gen_progress):
     def dashed_line():
         return f"{RED}├{'─'*(WIDTH+2)}┤{RESET}"
 
+    def xp_gauge(xp, needed, width):
+        """XP towards the next level, for the green display: filled in its dark
+        green, the rest in a lighter green."""
+        filled = int(width * min(xp, needed) / max(1, needed))
+        return f"{'▆' * filled}\033[38;5;108m{'▆' * (width - filled)}\033[0m"
+
     def bar(done, total, width=20):
+        """A gauge like the Pokemon stat bars: the caught part coloured, the rest
+        a faint track. "▆" leaves a gap above each bar, so stacked bars (one per
+        generation) stay separate instead of merging into one block."""
+        track = "\033[38;5;238m"
         if total == 0:
-            return "░" * width
-        
+            return f"{track}{'▆' * width}{RESET}"
         filled = int(width * done / total)
-        
-        fill_color = GREEN if done == total else YELLOW if done > 0 else RED
-        
         if done > 0 and filled == 0:
             filled = 1
-            
-        return f"{fill_color}{'█' * filled}{RESET}{'░' * (width - filled)}"
+        fill_color = GREEN if done == total else YELLOW
+        return f"{fill_color}{'▆' * filled}{track}{'▆' * (width - filled)}{RESET}"
 
     def get_pokemon_name(dex):
         return next((n for d, n in all_pokemon_list if d == dex), f"#{dex}")
@@ -478,27 +484,80 @@ def render_trainer_profile(gen_progress):
     GREY = "\033[38;5;245m"
     BOLD = "\033[1m"
 
+    LABEL_W = 13
+
+    def heading(text):
+        return f"{YELLOW}{BOLD}{text}{RESET}"
+
+    def field(label, value):
+        return f"  {GREY}{label:<{LABEL_W}}{RESET}{value}"
+
+    def nice_date(iso):
+        try:
+            d = date.fromisoformat(str(iso)[:10])
+        except ValueError:
+            return str(iso) if iso else "-"
+        return f"{d.day} {d.strftime('%b %Y')}"
+
     def section_profile():
         return [
-            f"Name:         {trainer['name']}",
-            f"Region:       {trainer['region']}",
-            f"Home Town:    {trainer['hometown']}",
-            f"Started:      {trainer['created']}",
+            heading("TRAINER"),
+            field("Name", trainer["name"]),
+            field("Region", trainer["region"] or "-"),
+            field("Home town", trainer["hometown"] or "-"),
+            field("Started", nice_date(trainer.get("created"))),
             "",
-            f"Level:        {lvl}",
-            f"Progress:     {bar(current_xp, next_lvl_req, width=16)} ",
-            f"              {current_xp}/{next_lvl_req} XP",
-            f"Lifetime XP:  {lifetime_xp:,}",
-            f"Rank:         {rank}",
+            heading("PROGRESS"),
+            field("Level", f"{BOLD}{lvl}{RESET}"),
+            field("XP", f"{bar(current_xp, next_lvl_req, width=14)} {current_xp:,}/{next_lvl_req:,}"),
+            field("Lifetime XP", f"{lifetime_xp:,}"),
+            field("Rank", rank),
         ]
 
     def section_streaks():
-        return [
-            f"Daily Catch Count:     {daily_catch_count}",
-            f"Current Catch Streak:  {streak_current}",
-            f"Longest Catch Streak:  {streak_longest}",
-            f"Last Catch Date:       {streak_last_date}",
+        today = date.today()
+        try:
+            last = date.fromisoformat(str(streak_last_date)[:10])
+        except ValueError:
+            last = None
+        # The saved streak only changes when you catch, so work out whether it's still alive.
+        alive = last is not None and (today - last).days <= 1
+        current = streak_current if alive else 0
+        caught_today = daily_catch_count if trainer.get("daily_catch", {}).get("date") == today.isoformat() else 0
+        if last == today:
+            note = f"{GREEN}✔ Streak safe today - see you tomorrow!{RESET}"
+        elif alive:
+            note = f"{YELLOW}Catch one today to make it {current + 1} days.{RESET}"
+        else:
+            note = f"{GREY}Open a terminal to start a new streak.{RESET}"
+        days = lambda n: f"{n} day{'s' if n != 1 else ''}"
+        rows = [
+            heading("STREAK"),
+            field("Current", f"{BOLD}{days(current)}{RESET}"),
+            field("Longest", days(max(streak_longest, current))),
+            "",
+            heading("TODAY"),
+            field("Caught", f"{caught_today} Pokemon"),
+            field("Last catch", nice_date(streak_last_date) if last else "-"),
+            "",
+            heading("LAST 7 DAYS"),
         ]
+        # One dot per day, from the catch times recorded since 0.0.8.
+        caught_days = set()
+        try:
+            import collection
+            for e in collection._events():
+                if e.get("e") == "caught" and isinstance(e.get("pokemon"), dict):
+                    caught_days.add(str(e["pokemon"].get("caught_at", ""))[:10])
+        except Exception:
+            pass
+        if last:
+            caught_days.add(last.isoformat())
+        week = [today - timedelta(days=n) for n in range(6, -1, -1)]
+        rows.append("  " + "".join(f"{GREY}{d.strftime('%a'):<5}{RESET}" for d in week))
+        rows.append("  " + "".join(
+            (f"{GREEN}●{RESET}" if d.isoformat() in caught_days else f"{GREY}·{RESET}") + " " * 4 for d in week))
+        return rows + ["", note]
 
     def section_completion():
         rows = []
@@ -509,14 +568,23 @@ def render_trainer_profile(gen_progress):
             rows.append(f"Gen {gen}  {bar(caught, total, width=18)} {colour}{caught:>3}/{total}{' ✔' if done else ''}{RESET}")
         return rows + ["", f"{GREY}Completed generations: 1 in 10 shiny.{RESET}"]
 
+    def favourite_types(name):
+        try:
+            data = json.loads((Path.home() / f".local/share/poketerm/cache/api_data/{normalize_name(name)}.json").read_text())
+            return " / ".join(t.title() for t in data.get("types", []))
+        except (OSError, ValueError):
+            return ""
+
     def section_favourites():
-        rows = []
+        if not favourites:
+            return [f"{GREY}No favourites yet - press e to choose them.{RESET}"]
+        rows = [f"{GREY}{' ' * 8}{'POKEMON':<13}DEX   TYPE{RESET}"]
         for i, dex in enumerate(favourites, 1):
             name = get_pokemon_name(dex)
-            colour = f"\033[48;5;{get_pokemon_color_code(name)}m\033[38;5;16m"
-            rows.append(f"{i})  {colour} {name.title().center(15)} {RESET}  #{dex:03d}")
-        return rows + ["", f"{GREY}Press 1-{len(favourites)} to see one, normal and shiny.{RESET}"] if rows else \
-            [f"{GREY}No favourites yet - press e to choose them.{RESET}"]
+            swatch = f"\033[38;5;{get_pokemon_color_code(name)}m▆▆{RESET}"
+            label = name.replace("-", " ").title()[:12]
+            rows.append(f"  {BOLD}{i}{RESET}  {swatch} {label:<12} {GREY}#{dex:03d}{RESET}  {favourite_types(name)}")
+        return rows + ["", f"{GREY}Press 1-{len(favourites)} to see one, normal and shiny.{RESET}"]
 
     tabs = [("Profile", section_profile), ("Streaks", section_streaks),
             ("Pokedex", section_completion), ("Favourites", section_favourites)]
@@ -528,20 +596,25 @@ def render_trainer_profile(gen_progress):
             title, build = tabs[tab]
             strip = "  ".join(f"{INVERT} {t} {RESET}" if i == tab else f"{GREY}{t}{RESET}"
                               for i, (t, _) in enumerate(tabs))
+            # Every tab is drawn at the height of the tallest, so the Pokedex
+            # doesn't grow and shrink as you move between tabs.
+            body = build()
+            tallest = max(len(b()) for _, b in tabs)
             lines = [f"{YELLOW}{BOLD}{'TRAINER PROFILE':^{W}}{RESET}", strip,
-                     f"{GREY}{'─' * W}{RESET}", ""] + build()
+                     f"{GREY}{'─' * W}{RESET}", ""] + body + [""] * (tallest - len(body))
             # The green display: the trainer summary on the Profile tab only.
-            info = {
+            infos = {
                 "Profile": [f"{BOLD}{trainer['name'].upper()}{RESET}", f"Level {lvl}", f"{rank}", "",
                             f"XP {current_xp}/{next_lvl_req}",
-                            "█" * int(26 * min(current_xp, next_lvl_req) / max(1, next_lvl_req)), "",
+                            xp_gauge(current_xp, next_lvl_req, 26), "",
                             f"Streak: {streak_current} day{'s' if streak_current != 1 else ''}"],
                 "Streaks": [f"{BOLD}STREAKS{RESET}", "", "Catch at least one", "Pokemon a day to keep",
                             "your streak going."],
                 "Pokedex": [f"{BOLD}POKEDEX{RESET}", "", "How much of each", "generation you've caught."],
                 "Favourites": [f"{BOLD}FAVOURITES{RESET}", "", "Your six favourite", "Pokemon. Press 1-6 to",
                                "see one, normal and", "shiny."],
-            }[title]
+            }
+            info = infos[title] + [""] * (max(len(v) for v in infos.values()) - len(infos[title]))
             device.show(lines, width=W, info=info,
                         keys=[("←→", "Tab"), ("1-6", "Fav"), ("e", "Edit"), ("b", "Back")],
                         slots=(f"Lv {lvl}", title),

@@ -18,6 +18,19 @@ INVERT = "\033[7m"
 MAX_QUERY = 20
 
 
+def clip(text, width):
+    """`text` cut to `width` visible cells, keeping its colours."""
+    out, seen, i = [], 0, 0
+    while i < len(text):
+        m = re.match(r"\x1b\[[0-9;]*m", text[i:])
+        if m:
+            out.append(m.group()); i += len(m.group()); continue
+        if seen >= width:
+            break
+        out.append(text[i]); seen += 1; i += 1
+    return "".join(out) + (RESET if seen >= width else "")
+
+
 def squash(text):
     """Lower-case, without spaces or punctuation: what names are compared on."""
     return re.sub(r"[^a-z0-9]", "", str(text).lower())
@@ -64,8 +77,11 @@ def search(entries, title, describe, width=44, info=None, slots=("Search", ""), 
     describe - entry -> the line shown for it in the results
     """
     import device
+    import textwrap
     query, cursor = "", 0
+    full_width = width
     while True:
+        width = max(20, min(full_width, device.available_width()))   # a narrow window: a narrow screen
         results = rank(entries, query)
         header = [f"{YELLOW}{BOLD}{title:^{width}}{RESET}", "",
                   f"{BOLD}Search:{RESET} {query}{INVERT} {RESET}",
@@ -76,11 +92,15 @@ def search(entries, title, describe, width=44, info=None, slots=("Search", ""), 
         top = max(0, min(cursor - room // 2, len(results) - room))
         lines = list(header)
         if not query:
-            lines.append(f"{GREY}Type a name (e.g. pika) or a number (e.g. 25).{RESET}")
+            lines += [f"{GREY}{t}{RESET}" for t in textwrap.wrap("Type a name (e.g. pika) or a number (e.g. 25).", width)]
         elif not results:
-            lines.append(f"{GREY}No Pokemon match \"{query}\".{RESET}")
+            lines += [f"{GREY}{t}{RESET}" for t in textwrap.wrap(f"No Pokemon match \"{query}\".", width)]
         for i, entry in enumerate(results[top: top + room], start=top):
             text = describe(entry)
+            plain = re.sub(r"\x1b\[[0-9;]*m", "", text)
+            if len(plain) > width - 2:                    # one line per result, cut at a whole word
+                cut = plain.rstrip()[: width - 2].rfind(" ")
+                text = clip(text, cut if cut > 0 else width - 2)
             if i == cursor:      # the highlight reads as one bar: no colours inside it
                 plain = re.sub(r"\x1b\[[0-9;]*m", "", text)
                 lines.append(f"{INVERT}> {plain:<{width - 2}}{RESET}")

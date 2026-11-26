@@ -51,7 +51,7 @@ SLOT_FG = 151
 
 RIGHT_WIDTH = 38
 HINGE = 3
-MAX_KEYS = 12     # blue buttons on the right half: up to four rows of three
+MAX_KEYS = 12     # blue buttons on the right half: up to six rows of two
 SIDE = 3          # casing margin left/right of the bezel
 FRAME = 3         # bezel (2) + the screen's own inner margin (1), each side
 BEZEL_ROWS = 4    # bezel rows above + below the screen: the ⊕ row, the screen's edge (x2), the speaker row
@@ -177,7 +177,7 @@ SLIM_CHROME = 8   # slim device rows besides the screen and its key buttons: top
 
 def _slim_key_rows(keys, width):
     """Rows the slim device's key buttons take, with a gap between rows like the full device."""
-    n = max(1, len(_key_button_rows(list(keys), width)))
+    n = max(1, _button_rows(keys, width))
     return 2 * n - 1
 
 
@@ -402,24 +402,47 @@ def _plain(lines, width, info, keys, slots, status, title):
     return c.render()
 
 
-def _key_button_rows(keys, width):
-    """Lay key buttons out as an even grid that fills `width`: every button the
-    same width, labels centred, like the full device's buttons.
-    Returns rows of [(x, text)]."""
+KEYCAP = 255      # the key's letter, on a darker blue cap
+BUTTON_COLUMNS = 2  # on the full device's right half
+PILL_W = 6          # the small green and yellow buttons above the displays
+
+
+def _button_grid(keys, width, columns=None):
+    """How key buttons fit `width`: (per_row, cell, cap). Every button is the
+    same width; each shows its key on a darker cap, then the label, so keys and
+    labels line up in columns from row to row."""
     keys = list(keys)
     if not keys:
-        return []
-    widest = max(len(f"{k} {label}") for k, label in keys) + 2
-    per_row = max(1, min(len(keys), (width + 1) // (widest + 1)))
+        return 1, width, 0
+    cap = max(visible_width(k) for k, _ in keys) + 2
+    need = cap + 1 + max(len(label) for _, label in keys) + 1
+    per_row = columns or max(1, min(len(keys), (width + 1) // (need + 1)))
+    if not columns and per_row >= 3 and len(keys) % per_row == 1:
+        per_row -= 1                  # no button left on its own in the last row
     cell = (width - (per_row - 1)) // per_row
-    rows = []
-    for start in range(0, len(keys), per_row):
-        row = []
-        for i, (k, label) in enumerate(keys[start:start + per_row]):
-            text = f"{k} {label}"[:cell]
-            row.append((i * (cell + 1), text.center(cell)))
-        rows.append(row)
-    return rows
+    return per_row, cell, cap
+
+
+def _button_rows(keys, width, columns=None):
+    per_row, _, _ = _button_grid(keys, width, columns)
+    return (len(list(keys)) + per_row - 1) // per_row
+
+
+def _draw_buttons(c, x0, y0, width, keys, columns=None):
+    """Draw the key buttons as an even grid (a blank row between rows)."""
+    keys = list(keys)
+    per_row, _, cap = _button_grid(keys, width, columns)
+    # Column edges spread over the whole width, so the grid's right edge lines
+    # up with whatever is above it even when the width doesn't divide evenly.
+    edges = [round(i * (width + 1) / per_row) for i in range(per_row + 1)]
+    for i, (key, label) in enumerate(keys):
+        r, col = divmod(i, per_row)
+        x, y = x0 + edges[col], y0 + r * 2
+        cell = edges[col + 1] - edges[col] - 1
+        c.fill(x, y, cell, 1, BLUE)
+        pad = cap - visible_width(key)
+        c.put(x, y, " " * (pad // 2) + key + " " * (pad - pad // 2), fg=KEYCAP, bg=BLUE_DARK, bold=True)
+        c.put(x + cap + 1, y, fit_words(label, max(0, cell - cap - 2)), fg=BLUE_DARK, bg=BLUE, bold=True)
 
 
 def _slim(lines, width, info, keys, slots, lights, status):
@@ -430,8 +453,7 @@ def _slim(lines, width, info, keys, slots, lights, status):
     cols, rows = terminal_size()
     side = 1
     total_w = width + 2 * (side + FRAME)
-    key_rows = _key_button_rows(list(keys), total_w - 4)
-    key_h = max(1, 2 * len(key_rows) - 1)                # a gap between rows, like the full device
+    key_h = _slim_key_rows(keys, total_w - 4)                # a gap between rows, like the full device
     room = rows - 1 - SLIM_CHROME - key_h
     body = list(lines)
     extra = [l for l in info if CSI_RE.sub("", l).strip()]
@@ -476,16 +498,13 @@ def _slim(lines, width, info, keys, slots, lights, status):
         c.put(bx + 4, by + height + 3, fit_words(status, bw - 14), fg=BEZEL_DARK, bg=BEZEL)
     c.put(bx + bw - 7, by + height + 3, "≡≡≡≡≡", fg=BEZEL_DARK, bg=BEZEL)
     # the key buttons, where the controls would be
-    ky = by + height + 5
-    for r, row in enumerate(key_rows):
-        for x, text in row:
-            c.put(2 + x, ky + 2 * r, text, fg=BLUE_DARK, bg=BLUE, bold=True)
+    _draw_buttons(c, 2, by + height + 5, total_w - 4, keys)
     return c.render()
 
 
 def right_height(info, keys):
     """Rows the right half needs for this info and these keys."""
-    key_rows = (min(len(keys), MAX_KEYS) + 2) // 3
+    key_rows = _button_rows(list(keys)[:MAX_KEYS], RIGHT_WIDTH - 6, BUTTON_COLUMNS)
     return 3 + 5 + (len(info) + 2) + key_rows * 2 + 9
 
 
@@ -559,8 +578,12 @@ def _device(lines, width, info, keys, slots, lights, status, mode):
     c.put(SIDE + 6, cy, "▄▄▄▄", fg=CASE_LINE, bg=CASE)              # two pills
     c.put(SIDE + 12, cy, "▄▄▄▄", fg=GREEN_BTN, bg=CASE)
     status_w = min(max(14, len(status) + 4), max(14, left_w - 26))
-    c.fill(SIDE + 6, cy + 2, status_w, 2, GREEN_BTN)               # green status slot
-    c.put(SIDE + 7, cy + 2, status[: status_w - 2], fg=GREEN_DARK, bg=GREEN_BTN, bold=True)
+    # green status display: an inset screen like the two on the right, text centred
+    c.put(SIDE + 6, cy + 1, "▄" * status_w, fg=GREEN_BTN, bg=CASE)
+    c.fill(SIDE + 6, cy + 2, status_w, 1, GREEN_BTN)
+    c.put(SIDE + 6, cy + 3, "▀" * status_w, fg=GREEN_BTN, bg=CASE)
+    shown = fit_words(status, status_w - 2)
+    c.put(SIDE + 6 + (status_w - len(shown)) // 2, cy + 2, shown, fg=GREEN_DARK, bg=GREEN_BTN, bold=True)
     dx = left_w - SIDE - 9                                          # d-pad
     c.put(dx + 3, cy, "██", fg=BLUE, bg=CASE)
     c.put(dx, cy + 1, "███", fg=BLUE, bg=CASE)
@@ -597,34 +620,31 @@ def _right_half(c, left_w, total_h, info, keys, slots):
 
     # green info display: grows to fill the space above the keys
     gx, gy, gw = x0 + 3, top + 5, RIGHT_WIDTH - 6
-    key_rows = (min(len(keys), MAX_KEYS) + 2) // 3
+    keys = list(keys)[:MAX_KEYS]
+    key_rows = _button_rows(keys, gw, BUTTON_COLUMNS)
     gh = max(5, total_h - gy - key_rows * 2 - 9)
     c.fill(gx, gy, gw, gh, GREEN)
     base = sgr(GREEN_DARK, GREEN)
     for i, line in enumerate(info[: gh - 2]):
         c.put_ansi(gx + 2, gy + 1 + i, line, gw - 4, base)
 
-    # blue key buttons, three per row
+    # blue key buttons: two columns, key caps and labels lined up
     ky = gy + gh + 1
-    cell = (gw - 2) // 3
-    for i, (key, label) in enumerate(list(keys)[:MAX_KEYS]):
-        r, col = divmod(i, 3)
-        x = gx + col * (cell + 1)
-        y = ky + r * 2
-        c.fill(x, y, cell, 1, BLUE)
-        text = f"{key} {label}"[:cell]
-        c.put(x + max(0, (cell - len(text)) // 2), y, text, fg=BLUE_DARK, bg=BLUE, bold=True)
-    rows_used = (min(len(keys), MAX_KEYS) + 2) // 3
-    # small buttons and the two dark slots
-    sy = max(ky + rows_used * 2, total_h - 6)
-    c.put(gx + gw - 18, sy, "▄▄▄▄▄", fg=GREEN_BTN, bg=CASE)
-    c.put(gx + gw - 10, sy, "▄▄▄▄▄", fg=YELLOW, bg=CASE)
-    c.put(gx + gw - 3, sy + 1, "▐█▌", fg=YELLOW, bg=CASE)
-    slot_w = (gw - 4) // 2
-    for i, text in enumerate(slots[:2]):
-        x = gx + i * (slot_w + 4)
-        c.fill(x, total_h - 4, slot_w, 2, SLOT)
-        c.put(x + 1, total_h - 4, fit_words(str(text), slot_w - 2), fg=SLOT_FG, bg=SLOT, bold=True)
+    _draw_buttons(c, gx, ky, gw, keys, BUTTON_COLUMNS)
+    rows_used = key_rows
+    # Two small displays along the bottom, the same width as the green display
+    # above them, each with a small button centred over it. Each display is an
+    # inset screen: half-block top and bottom edges, text centred on the middle row.
+    gap = 2
+    slot_w = (gw - gap) // 2
+    for i, (text, pill) in enumerate(zip(list(slots[:2]) + [""] * (2 - len(slots[:2])), (GREEN_BTN, YELLOW))):
+        x = gx if i == 0 else gx + gw - slot_w
+        c.put(x + (slot_w - PILL_W) // 2, total_h - 7, "▄" * PILL_W, fg=pill, bg=CASE)
+        c.put(x, total_h - 5, "▄" * slot_w, fg=SLOT, bg=CASE)
+        c.fill(x, total_h - 4, slot_w, 1, SLOT)
+        c.put(x, total_h - 3, "▀" * slot_w, fg=SLOT, bg=CASE)
+        shown = fit_words(str(text), slot_w - 2)
+        c.put(x + (slot_w - len(shown)) // 2, total_h - 4, shown, fg=SLOT_FG, bg=SLOT, bold=True)
 
 
 # -- typing on the device -------------------------------------------------------
