@@ -11,7 +11,7 @@
 
 </div>
 
-https://github.com/user-attachments/assets/54460f60-bf9c-4139-9962-08387df8d2a3
+https://github.com/user-attachments/assets/4b3c3f6e-ef23-43a9-adcc-520995f3b171
 
 Every new terminal catches a random Pokémon, sometimes a rare shiny, and draws its sprite. Your catches build up in a Pokédex drawn in the terminal as a handheld device. From there you can trade with friends on your network, look back through every Pokémon's story, and level up your trainer.
 
