@@ -102,9 +102,9 @@ Poketerm prints to the terminal when it starts, so with Powerlevel10k's instant 
 
 ```bash
 poketerm --update --from .        # install this checkout as a normal (copied) build, e.g. to test before release
-./release.sh 0.0.8-beta.1         # publish a pre-release - only `poketerm --update --beta` users get it
-./release.sh 0.0.8                # publish a stable release from main - all users are offered it
-./release.sh 0.0.8 --dry-run      # run every check (syntax + the full test suite) without publishing
+./release.sh 1.0.0-beta.1         # publish a pre-release - only `poketerm --update --beta` users get it
+./release.sh 1.0.0                # publish a stable release from main - all users are offered it
+./release.sh 1.0.0 --dry-run      # run every check (syntax + the full test suite) without publishing
 ./test.sh                         # run the end-to-end tests in a throwaway HOME (-v for details)
 ```
 
@@ -177,7 +177,7 @@ Press `h` in the Pokedex to see your catching habits:
 - **Busiest day**: the day you caught the most
 - **When you catch**: your catches split into morning, afternoon, evening and night, and what that makes you, e.g. *You're a night-time catcher!*
 
-Every Pokemon you catch counts, even ones you've since traded away. Pokemon you received in trades don't count, because someone else caught them. Pokemon caught before poketerm 0.0.8 are included in the total, but their catch times weren't recorded, so they aren't part of the rest.
+Every Pokemon you catch counts, even ones you've since traded away. Pokemon you received in trades don't count, because someone else caught them. Pokemon caught before poketerm 1.0 are included in the total, but their catch times weren't recorded, so they aren't part of the rest.
 
 ## Settings
 
@@ -189,6 +189,8 @@ Open the Pokedex (`pokedex`) and press `s`. Move with `↑`/`↓` and press `Ent
 | **System details** | Show or hide the system information (OS, host, …) beside the Pokemon when a terminal opens |
 | **Trade animations** | Play the Poke Ball animation when a trade completes, or skip straight to the result |
 | **Daily update check** | Check once a day for a new version of poketerm |
+
+The bottom of the settings page shows which version of poketerm you have (so does `poketerm --version`).
 
 Settings are kept in `~/.local/share/poketerm/settings.conf` and survive updates. `./install.sh --gen 2-5` sets the generations too, and `poketerm --gen 3` catches from Gen 3 for just that one run. If you set generations with `--gen` in an older version, they're moved into the settings automatically when you update.
 
@@ -208,7 +210,7 @@ On a Pokemon's page you can also:
 - Press `n` to give it a **nickname** (up to 12 letters, numbers, spaces and `.` `'` `-`; leave it empty to clear it). The nickname goes with it if you trade it.
 - Press `f` to mark it as a **♥ favourite**. Favourites can't be traded, so you can't send one away by accident. Press `f` again to unmark it.
 
-Pokemon you caught before poketerm 0.0.8 are all still there, marked *Caught before poketerm 0.0.8*: their dates and natures weren't recorded back then. When you trade, you choose exactly which one to send, and its story goes with it to the other trainer.
+Pokemon you caught before poketerm 1.0 are all still there, marked *Caught before poketerm 1.0*: their dates and natures weren't recorded back then. When you trade, you choose exactly which one to send, and its story goes with it to the other trainer.
 
 ## Trading
 

@@ -229,6 +229,14 @@ def search_pokedex(pokedex):
                          slots=("Search", "905 Pokemon"), status="Search")
 
 
+def poketerm_version():
+    """The installed version, e.g. "1.0.0" (from the VERSION file the installer writes)."""
+    try:
+        return (Path.home() / ".local/share/poketerm/VERSION").read_text().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
 def settings_page():
     """The settings page (press s on the Pokedex list). Every change is saved at
     once and applies from the next terminal you open."""
@@ -267,7 +275,9 @@ def settings_page():
             lines.append(row(f"{state} {label}", i == cursor, W))
         caught_from = len(values["generations"])
         lines += ["", f"{GREY}Changes save straight away and apply from{RESET}",
-                  f"{GREY}the next terminal you open.{RESET}"]
+                  f"{GREY}the next terminal you open.{RESET}",
+                  "", f"{GREY}{'─' * W}{RESET}",
+                  f"{GREY}{'poketerm ' + poketerm_version():^{W}}{RESET}"]
         if note:
             lines += ["", note]
         if cursor < len(settings.ALL_GENERATIONS):
@@ -485,12 +495,12 @@ def draw_details(name, has_normal, has_shiny, showcase=False):
         facts.append(f"{short.get(stat, stat[:6]):<7}{val:>4} {bar}")
 
     def story(rec, W):
-        """Lines about one of your Pokemon (it may be from before 0.0.8)."""
+        """Lines about one of your Pokemon (it may be from before 1.0)."""
         title = pretty(name)
         kind = f"{YELLOW}★ Shiny{RESET}" if rec.get("shiny") else "Normal"
         out = []
         if rec.get("legacy") and not rec.get("caught_at"):
-            out.append(f"{GREY}Caught before poketerm 0.0.8{RESET}")
+            out.append(f"{GREY}Caught before poketerm 1.0{RESET}")
         else:
             nature = f"{rec['nature']} nature" if rec.get("nature") else f"{GREY}nature unknown{RESET}"
             out.append(f"{kind} · {nature}")
@@ -622,7 +632,7 @@ def draw_details(name, has_normal, has_shiny, showcase=False):
 # -----------------------
 def print_help():
     print(f"""
-    {YELLOW}Poketerm Pokedex Help{RESET}
+    {YELLOW}Poketerm Pokedex Help{RESET}  (poketerm {poketerm_version()})
     -----------------------
     Usage:
     {GREEN}pokedex [gen]{RESET}    Open the Pokedex for a specific generation (1-8).

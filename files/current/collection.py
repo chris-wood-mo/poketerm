@@ -6,7 +6,7 @@ pokedex.txt stays the source of truth for *how many* of each Pokemon you have
 the story of each one in pokemon.log, an append-only list of events:
 
     caught     a new Pokemon (date and time, nature, catch number, you as trainer)
-    legacy     one you had before poketerm 0.0.8 (no date or place known)
+    legacy     one you had before poketerm 1.0 (no date or place known)
     sent       one that left in a trade (with the trade it left in)
     received   one that arrived in a trade (with its whole history)
     returned   one that came back because a trade was cancelled
@@ -170,7 +170,7 @@ def reconcile():
     fixes = []
     for key in set(counts) | set(by_kind):
         want, recs = counts.get(key, 0), by_kind.get(key, [])
-        if len(recs) < want:                              # from before 0.0.8, or a missed record
+        if len(recs) < want:                              # from before 1.0, or a missed record
             for _ in range(want - len(recs)):
                 pid = new_id()
                 fixes.append({"e": "legacy", "id": pid, "pokemon": {
@@ -344,7 +344,7 @@ def summary(rec):
     nick = f'"{rec["nickname"]}" ' if rec.get("nickname") else ""
     heart = "♥ " if rec.get("favourite") else ""
     if rec.get("legacy") and not rec.get("caught_at"):
-        return f"{heart}{nick}Caught before poketerm 0.0.8".replace('" C', '" · c')
+        return f"{heart}{nick}Caught before poketerm 1.0".replace('" C', '" · c')
     parts = [f"{heart}{nick}".strip()] if (heart or nick) else []
     if rec.get("nature"):
         parts.append(rec["nature"])

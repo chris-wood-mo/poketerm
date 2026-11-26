@@ -383,7 +383,7 @@ class Runner:
         seeded = self.collection("ash", """
 import random
 with trade_store.pokedex_lock():
-    collection.reconcile()                       # the 2 Pikachu appear (from before 0.0.8)
+    collection.reconcile()                       # the 2 Pikachu appear (from before 1.0)
 # give them known natures, like two real catches would have
 recs = collection.of_kind("pikachu")
 events = []
@@ -990,7 +990,7 @@ def unit_tests():
     ts2.APP_DIR.mkdir(parents=True, exist_ok=True)
     (ts2.APP_DIR / "pokedex.txt").write_text("bulbasaur 2\npikachu 1\npikachu (shiny) 1\n")
     recs = col.reconcile()
-    check("Pokemon from before 0.0.8 appear, one record each", len(recs) == 4 and all(r.get("legacy") for r in recs))
+    check("Pokemon from before 1.0 appear, one record each", len(recs) == 4 and all(r.get("legacy") for r in recs))
     (ts2.APP_DIR / "pokedex.txt").write_text("bulbasaur 3\npikachu 1\npikachu (shiny) 1\n")
     new = col.record_catch("bulbasaur", False, "Ash", "2026-11-25T21:41:00+00:00")
     check("a catch is recorded with nature, time, trainer and catch number",
@@ -1122,7 +1122,7 @@ def unit_tests():
               ev("received", "mew", "2026-11-06T12:00:00+00:00"),              # traded in: not your catch
               ev("caught", "zubat", "not a time")]                             # unreadable: skipped
     st_ = ch.stats(events, special)
-    check("history: counts catches with times, and those from before 0.0.8",
+    check("history: counts catches with times, and those from before 1.0",
           st_["total"] == 6 and st_["before"] == 2 and st_["days"] == 5)
     check("history: first and latest catch go by time, not log order",
           st_["first"][1]["name"] == "rattata" and st_["latest"][1]["name"] == "pidgey")

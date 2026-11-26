@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Publish a new poketerm release that users get via `poketerm --update`.
 #
-#   ./release.sh 0.0.8            stable release (from main) - everyone is offered it
-#   ./release.sh 0.0.8-beta.1     pre-release - only `poketerm --update --beta` gets it
-#   ./release.sh 0.0.8 --dry-run  run all checks, change nothing
+#   ./release.sh 1.0.0            stable release (from main) - everyone is offered it
+#   ./release.sh 1.0.0-beta.1     pre-release - only `poketerm --update --beta` gets it
+#   ./release.sh 1.0.0 --dry-run  run all checks, change nothing
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,7 +31,7 @@ fail() { echo "✖ $*" >&2; exit 1; }
 pass() { echo "✔ $*"; }
 
 [[ -n "$version" ]] || { usage; exit 1; }
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || fail "'$version' is not a valid version (e.g. 0.0.8 or 0.0.8-beta.1)"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || fail "'$version' is not a valid version (e.g. 1.0.0 or 1.0.0-beta.1)"
 prerelease=false
 [[ "$version" == *-* ]] && prerelease=true
 

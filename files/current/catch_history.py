@@ -1,10 +1,10 @@
 """The catch history page (press h on the Pokedex list).
 
-Built from the catch times poketerm has recorded since 0.0.8 (pokemon.log):
+Built from the catch times poketerm has recorded since 1.0 (pokemon.log):
 your first and latest catch, your rarest, your busiest day, and when in the
 day you catch ("You're a night-time catcher"). Every catch counts, including
 Pokemon you've since traded away; Pokemon received in trades weren't caught by
-you, so they don't. Pokemon from before 0.0.8 have no recorded time: they're
+you, so they don't. Pokemon from before 1.0 have no recorded time: they're
 counted, but can't be placed.
 """
 from collections import Counter
@@ -136,7 +136,7 @@ def screen(s, width):
                   grey("Every Pokemon you catch from now on is"),
                   grey("added here: open a new terminal to catch one.")]
         if s["before"]:
-            lines += ["", grey(f"Your {s['before']} Pokemon from before poketerm 0.0.8"),
+            lines += ["", grey(f"Your {s['before']} Pokemon from before poketerm 1.0"),
                       grey("have no recorded times.")]
         return lines, [f"{BOLD}CATCH HISTORY{RESET}", "", "Nothing recorded", "yet."]
     first_t, first = s["first"]
@@ -145,8 +145,8 @@ def screen(s, width):
     day, on_day = s["busiest"]
     lines.append(f"{label('Catches')}  {s['total']} on {s['days']} day{'s' if s['days'] != 1 else ''}")
     if s["before"]:
-        long = f"  + {s['before']} from before poketerm 0.0.8 (no times)"
-        lines.append(grey(long if len(long) <= width else f"  + {s['before']} from before 0.0.8"))
+        long = f"  + {s['before']} from before poketerm 1.0 (no times)"
+        lines.append(grey(long if len(long) <= width else f"  + {s['before']} from before 1.0"))
     lines += ["",
               label("First catch"), f"  {_name(first)}", grey(f"  {_when(first_t)}"),
               label("Latest catch"), f"  {_name(latest)}", grey(f"  {_when(latest_t)}"),

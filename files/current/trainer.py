@@ -542,7 +542,7 @@ def render_trainer_profile(gen_progress):
             "",
             heading("LAST 7 DAYS"),
         ]
-        # One dot per day, from the catch times recorded since 0.0.8.
+        # One dot per day, from the catch times recorded since 1.0.
         caught_days = set()
         try:
             import collection
